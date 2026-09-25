@@ -3,30 +3,21 @@ import json
 import os
 import threading
 import time
-from urllib.parse import urlparse
 
 import httpx
 
 from .hardware import hardware, recommend
 from .processes import capture, executable
+from .lmstudio import LMStudioService, local, parse_cli_json
 
 DEFAULT_PROFILE = {'runtime': 'lmstudio', 'base_url': 'http://127.0.0.1:1234',
-                   'model': '', 'context': 16384, 'output_limit': 4096}
-
-
-def parse_cli_json(text):
-    for index, char in enumerate(text):
-        if char in '[{':
-            try:
-                return json.loads(text[index:])
-            except json.JSONDecodeError:
-                continue
-    raise ValueError('CLI не вернул JSON')
+                   'model': '', 'context': 16384, 'output_limit': 4096, 'manage_runtime': True}
 
 
 class ModelRuntime:
-    def __init__(self):
+    def __init__(self, directory=None):
         self.lock = threading.Lock()
+        self.service = LMStudioService(directory)
 
     def request(self, profile, path, body=None, timeout=8):
         token = os.environ.get('AGENTVISOR_MODEL_TOKEN', '')
@@ -61,7 +52,9 @@ class ModelRuntime:
             error = str(exc)
             if profile['runtime'] == 'lmstudio' and self.local(profile) and executable('lms'):
                 try:
-                    rows = parse_cli_json(capture([executable('lms'), 'ls', '--llm', '--json'], timeout=25))
+                    # Polling the page must not wake a stopped service.
+                    rows = (parse_cli_json(self.service.command('ls', '--llm', '--json', timeout=25))
+                            if self.service.daemon().get('status') == 'running' else [])
                     for row in rows:
                         models.append({'id': row['modelKey'], 'name': row.get('displayName', row['modelKey']),
                                        'size': row.get('sizeBytes', 0), 'max_context': row.get('maxContextLength'),
@@ -76,17 +69,55 @@ class ModelRuntime:
                               'context': 8192, 'output_limit': 2048, 'confidence': 'unknown',
                               'reason': 'Оборудование удалённого сервера модели недоступно. '
                                         'Предложен небольшой стартовый контекст; проверьте память на сервере модели.'}
-        return {'online': online, 'models': models, 'error': error, 'recommendation': recommendation}
+        return {'online': online, 'models': models, 'error': error, 'recommendation': recommendation,
+                'service': self.service.status(profile, online)}
 
     @staticmethod
     def local(profile):
-        return urlparse(profile['base_url']).hostname in {'localhost', '127.0.0.1', '::1'}
+        return local(profile)
+
+    def prepare(self, profile, cancel=None, report=None):
+        self.service.ensure(profile, self.request, cancel, report)
+
+    def instances(self):
+        path = self.service.directory / 'model-instances.json'
+        try:
+            return json.loads(path.read_text(encoding='utf-8'))
+        except (FileNotFoundError, ValueError):
+            return {}
+
+    def remember_instance(self, profile, identifier):
+        with self.lock:
+            instances = self.instances()
+            endpoint = profile['base_url'].rstrip('/')
+            instances.setdefault(endpoint, [])
+            if identifier not in instances[endpoint]:
+                instances[endpoint].append(identifier)
+            self.service.directory.mkdir(parents=True, exist_ok=True)
+            path = self.service.directory / 'model-instances.json'
+            temporary = path.with_suffix('.tmp')
+            temporary.write_text(json.dumps(instances), encoding='utf-8')
+            temporary.replace(path)
+
+    def owns_instance(self, profile, identifier):
+        return (identifier.startswith('agentvisor-') or
+                identifier in self.instances().get(profile['base_url'].rstrip('/'), []))
+
+    def start_service(self, profile):
+        if profile['runtime'] != 'lmstudio' or not self.local(profile):
+            raise RuntimeError('Запуск сервиса доступен только для локального LM Studio')
+        self.service.ensure(profile, self.request, force=True)
+        return {'text': 'Сервер LM Studio готов', 'service': self.service.status(profile, True)}
+
+    def stop_service(self, profile):
+        return self.service.stop(profile, self.request)
 
     def ensure(self, profile, cancel=None):
         if cancel and cancel.is_set():
             raise InterruptedError()
         if not profile.get('model'):
             raise RuntimeError('Выберите локальную модель в разделе «Модели»')
+        self.prepare(profile, cancel)
         if profile['runtime'] == 'ollama':
             if profile.get('_reload'):
                 self.request(profile, '/api/generate', {'model': profile['model'], 'prompt': '',
@@ -95,12 +126,7 @@ class ModelRuntime:
                                   'stream': False, 'keep_alive': '30m',
                                   'options': {'num_ctx': profile['context']}}, timeout=180)
             return {'instance': result.get('model', profile['model']), 'context': profile['context']}
-        if self.local(profile) and executable('lms'):
-            try:
-                self.request(profile, '/api/v1/models')
-            except httpx.HTTPError:
-                port = urlparse(profile['base_url']).port or 1234
-                capture([executable('lms'), 'server', 'start', '--port', str(port)], timeout=60, cancel=cancel)
+        if self.local(profile) and executable('lms') and self.service.matches(profile):
             identifier = 'agentvisor-' + hashlib.sha256(
                 f"{profile['model']}:{profile['context']}".encode()).hexdigest()[:12]
             existing = self.request(profile, '/api/v1/models')['models']
@@ -115,14 +141,16 @@ class ModelRuntime:
             for row in existing:
                 for instance in row.get('loaded_instances', []):
                     if instance['id'].startswith('agentvisor-'):
-                        capture([executable('lms'), 'unload', instance['id']], timeout=60, cancel=cancel)
-            capture([executable('lms'), 'load', profile['model'], '--identifier', identifier,
-                     '--context-length', str(profile['context']), '--parallel', '1', '-y'],
-                    timeout=300, cancel=cancel)
+                        self.service.command('unload', instance['id'], timeout=60, cancel=cancel)
+            self.service.notify('Загрузка модели в память...')
+            self.service.command('load', profile['model'], '--identifier', identifier,
+                                 '--context-length', str(profile['context']), '--parallel', '1', '-y',
+                                 timeout=300, cancel=cancel)
             rows = self.request(profile, '/api/v1/models')['models']
             for row in rows:
                 for instance in row.get('loaded_instances', []):
                     if instance['id'] == identifier and instance['config']['context_length'] == profile['context']:
+                        self.service.notify('Модель готова к работе')
                         return {'instance': identifier, 'context': profile['context']}
             raise RuntimeError('Runtime не подтвердил загрузку с выбранным контекстом')
         existing = self.request(profile, '/api/v1/models')['models']
@@ -134,17 +162,43 @@ class ModelRuntime:
         loaded = self.request(profile, '/api/v1/models/load',
                               {'model': profile['model'], 'context_length': profile['context'],
                                'echo_load_config': True}, timeout=300)
+        self.remember_instance(profile, loaded['instance_id'])
         context = loaded.get('load_config', {}).get('context_length')
         if context != profile['context']:
             raise RuntimeError('Сервер не подтвердил запрошенный размер контекста')
         return {'instance': loaded['instance_id'], 'context': context}
 
     def estimate(self, profile):
-        if profile['runtime'] == 'lmstudio' and self.local(profile) and executable('lms'):
+        self.prepare(profile)
+        if profile['runtime'] == 'lmstudio' and self.local(profile) and executable('lms') and self.service.matches(profile):
             output = capture([executable('lms'), 'load', profile['model'], '--estimate-only',
-                              '--context-length', str(profile['context'])], timeout=60, include_stderr=True)
+                              '--context-length', str(profile['context'])], timeout=60,
+                             include_stderr=True, service=True)
             return {'kind': 'runtime_estimate', 'text': output[-8000:]}
         return {'kind': 'unavailable', 'text': 'Оценка без загрузки доступна для локального LM Studio CLI.'}
+
+    def unload(self, profile):
+        if profile['runtime'] == 'ollama':
+            self.request(profile, '/api/generate', {'model': profile['model'], 'prompt': '',
+                         'stream': False, 'keep_alive': 0}, timeout=60)
+        else:
+            rows = self.request(profile, '/api/v1/models')['models']
+            for row in rows:
+                if row.get('key') != profile['model']:
+                    continue
+                for instance in row.get('loaded_instances', []):
+                    if self.owns_instance(profile, instance['id']):
+                        self.request(profile, '/api/v1/models/unload', {'instance_id': instance['id']}, timeout=60)
+        return {'text': 'Экземпляры модели AgentVisor выгружены из памяти'}
+
+    def download(self, profile, model, quantization=''):
+        if profile['runtime'] != 'lmstudio':
+            raise RuntimeError('Скачивание из панели доступно для LM Studio')
+        self.prepare(profile)
+        body = {'model': model}
+        if quantization:
+            body['quantization'] = quantization
+        return self.request(profile, '/api/v1/models/download', body, timeout=60)
 
     def benchmark(self, profile):
         ready = self.ensure(profile)

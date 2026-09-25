@@ -29,9 +29,9 @@ def test_remote_lmstudio_reuses_matching_loaded_instance():
     assert calls == ['/api/v1/models']
 
 
-def test_remote_lmstudio_refuses_unconfirmed_context():
+def test_remote_lmstudio_refuses_unconfirmed_context(tmp_path):
     import pytest
-    runtime = ModelRuntime()
+    runtime = ModelRuntime(tmp_path)
     runtime.request = lambda profile, path, body=None, **kw: (
         {'models': []} if path == '/api/v1/models' else
         {'instance_id': 'loaded-model', 'load_config': {'context_length': 4096}})

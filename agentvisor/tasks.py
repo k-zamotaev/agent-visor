@@ -16,6 +16,7 @@ class Profile(BaseModel):
     model: str = Field(default='', max_length=400)
     context: int = Field(default=16384, ge=4096, le=262144)
     output_limit: int = Field(default=4096, ge=256, le=32768)
+    manage_runtime: bool = True
 
     @field_validator('base_url')
     @classmethod

@@ -7,15 +7,17 @@ services:
       AGENTVISOR_DATA: /data
       AGENTVISOR_ALLOWED_HOSTS: ${AGENTVISOR_ALLOWED_HOSTS:-}
       AGENTVISOR_MODEL_RUNTIME: lmstudio
-      AGENTVISOR_MODEL_URL: http://host.docker.internal:1234
+      AGENTVISOR_MODEL_URL: ${AGENTVISOR_MODEL_URL:-http://127.0.0.1:1234}
       AGENTVISOR_MODEL_TOKEN: ${AGENTVISOR_MODEL_TOKEN:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - agentvisor-data:/data
+      - lmstudio-data:/home/agentvisor/.lmstudio
       - ${AGENTVISOR_WORKSPACE:-./workspace}:/workspaces/project
     restart: unless-stopped
     init: true
     stop_grace_period: 20s
 volumes:
   agentvisor-data:
+  lmstudio-data:

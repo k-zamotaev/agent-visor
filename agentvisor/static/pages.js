@@ -1,6 +1,7 @@
 import {t as txt,tr,markup,locale,getLanguage} from './i18n.js';
 import {$,esc,number,gigabytes,duration,icon,toast,badge,eventRows} from './ui.js';
 import {renderNetwork} from './network.js';
+import {renderRuntime} from './runtime.js';
 
 let context;
 const field=(id,label,value='',type='text',attrs='')=>`<div class="field"><label for="${id}">${label}</label><input id="${id}" type="${type}" value="${esc(value)}" ${attrs}></div>`;
@@ -36,14 +37,14 @@ function tasksPage(root){
   await context.refresh();toast(event.submitter.value==='start'?txt('Задача запущена'):txt('Задача сохранена'));
  });};
 }
-function readProfile(){return {runtime:$('#profile-runtime').value,base_url:$('#profile-url').value,model:$('#profile-model').value.trim(),context:numeric('profile-context'),output_limit:numeric('profile-output')};}
+function readProfile(){return {runtime:$('#profile-runtime').value,base_url:$('#profile-url').value,model:$('#profile-model').value.trim(),context:numeric('profile-context'),output_limit:numeric('profile-output'),manage_runtime:$('#profile-manage').checked};}
 function inventoryPanel(){
  const info=context.state.modelInfo, node=$('#model-inventory');if(!node)return;
  if(!info){node.innerHTML=markup('<p class="quiet">Проверяем доступные модели…</p>');return;}
  const recommendation=info.recommendation;
- node.innerHTML=`<div class="notice ${info.online?'':'warning'}">${esc(info.online?txt('Сервер модели отвечает.'):info.error||txt('Сервер не запущен. Локальный LM Studio можно запустить кнопкой «Загрузить модель».'))}</div>
+ node.innerHTML=`<div class="notice ${info.online?'':'warning'}">${esc(info.online?txt('Сервер модели отвечает.'):info.error||txt('Сервер не запущен. Нажмите «Запустить сервис» или запустите задачу с автоматическим управлением LM Studio.'))}</div>
  ${recommendation?.model?tr`<div class="prose"><strong>Стартовый профиль: ${esc(recommendation.model)}</strong><p>${number(recommendation.context)} токенов · ${recommendation.confidence==='unknown'?txt('память удалённого узла неизвестна'):txt('оценка по памяти')}</p><p>${esc(recommendation.reason)}</p><button class="button" id="use-recommendation">Применить к форме</button></div>`:''}
- <div class="model-list">${(info.models||[]).map(m=>`<div class="model-option"><div><h3>${esc(m.name||m.id)}</h3><p>${m.size?gigabytes(m.size)+txt(' ГБ · '):''}${m.tool_use===false?txt('Инструменты не поддерживаются'):m.tool_use===true?txt('Поддерживает инструменты'):txt('Поддержка инструментов не подтверждена')}</p></div><button class="button" data-model="${esc(m.id)}">${m.loaded?txt('Выбрать · загружена'):txt('Выбрать')}</button></div>`).join('')||markup('<p class="prose">Установленных моделей пока нет. Загрузите модель с поддержкой инструментов через LM Studio или Ollama, затем обновите список.</p>')}</div>`;
+ <div class="model-list">${(info.models||[]).map(m=>`<div class="model-option"><div><h3>${esc(m.name||m.id)}</h3><p>${m.size?gigabytes(m.size)+txt(' ГБ · '):''}${m.tool_use===false?txt('Инструменты не поддерживаются'):m.tool_use===true?txt('Поддерживает инструменты'):txt('Поддержка инструментов не подтверждена')}</p></div><button class="button" data-model="${esc(m.id)}">${m.loaded?txt('Выбрать · загружена'):txt('Выбрать')}</button></div>`).join('')||markup('<p class="prose">Установленных моделей пока нет. Для LM Studio скачайте модель через панель выше; для Ollama используйте ollama pull.</p>')}</div>`;
  $('#model-options').innerHTML=(info.models||[]).map(m=>`<option value="${esc(m.id)}"></option>`).join('');
  if($('#use-recommendation'))$('#use-recommendation').onclick=()=>{$('#profile-model').value=recommendation.model;$('#profile-context').value=recommendation.context;$('#profile-output').value=recommendation.output_limit;toast(txt('Профиль перенесён в форму. Сохраните настройки или проверьте загрузку.'));};
  node.querySelectorAll('[data-model]').forEach(button=>button.onclick=()=>{$('#profile-model').value=button.dataset.model;$('#profile-model').focus();});
@@ -56,20 +57,22 @@ function showModelResult(result){
 }
 function modelsPage(root){
  const p=context.state.profile;
- root.innerHTML=tr`<div class="settings-grid"><form id="profile-form" class="panel form-panel"><h2>Профиль запуска</h2><p>Сохранённый профиль используется в новых задачах. Уже созданные задачи сохраняют свой профиль.</p>
+ root.innerHTML=tr`<section id="runtime-controls" class="panel network-panel"></section><div class="settings-grid"><form id="profile-form" class="panel form-panel"><h2>Профиль запуска</h2><p>Сохранённый профиль используется в новых задачах. Уже созданные задачи сохраняют свой профиль.</p>
  <div class="field"><label for="profile-runtime">Сервер модели</label><select id="profile-runtime"><option value="lmstudio" ${p.runtime==='lmstudio'?'selected':''}>LM Studio</option><option value="ollama" ${p.runtime==='ollama'?'selected':''}>Ollama</option></select></div>
- ${field('profile-url',txt('Адрес сервера'),p.base_url,'url','required')}<p class="prose">Укажите корневой адрес без /v1. Для Docker и LM Studio на хосте: http://host.docker.internal:1234.</p><hr class="section-divider">
+ ${field('profile-url',txt('Адрес сервера'),p.base_url,'url','required')}<p class="prose">Локальный headless LM Studio: http://127.0.0.1:1234, в том числе внутри Docker. Для внешнего сервера укажите его корневой адрес без /v1.</p>
+ <label class="check-label"><input id="profile-manage" type="checkbox" ${p.manage_runtime!==false?'checked':''}><span>Автоматически устанавливать и запускать локальный LM Studio при необходимости</span></label><hr class="section-divider">
  ${field('profile-model',txt('Модель'),p.model,'text',markup('list="model-options" placeholder="Пустое поле — автовыбор при запуске"'))}<datalist id="model-options"></datalist>
  <div class="form-row">${field('profile-context',txt('Контекст, токенов'),p.context,'number','min="4096" max="262144" step="1" required')}${field('profile-output',txt('Максимум ответа'),p.output_limit,'number','min="256" max="32768" required')}</div>
  <p class="prose">Лимит ответа должен быть меньше половины контекста. Автопрофиль — начальная оценка; скорость проверяется отдельным замером.</p>
  <div class="form-actions"><button class="button primary" type="submit">Сохранить профиль</button><button class="button" id="refresh-models" type="button">${icon('refresh')}Обновить список</button></div>
- <hr class="section-divider"><div class="model-actions"><button class="button" type="button" data-model-action="estimate">Оценить память</button><button class="button" type="button" data-model-action="load">Загрузить модель</button><button class="button" type="button" data-model-action="benchmark">Измерить скорость</button></div>
+ <hr class="section-divider"><div class="model-actions"><button class="button" type="button" data-model-action="estimate">Оценить память</button><button class="button" type="button" data-model-action="load">Загрузить модель</button><button class="button" type="button" data-model-action="unload">Выгрузить из памяти</button><button class="button" type="button" data-model-action="benchmark">Измерить скорость</button></div>
  <p class="prose model-help">Загрузка и замер доступны, когда агент на паузе. Замер запускает короткий ответ модели; он не оценивает качество решения задач.</p><pre id="model-result" class="result-output" role="status" hidden></pre></form>
  <section class="panel"><div class="panel-heading"><h2>Доступно на узле</h2></div><div id="model-inventory"></div></section></div>`;
  $('#profile-runtime').onchange=()=>{$('#profile-url').value=$('#profile-runtime').value==='ollama'?'http://127.0.0.1:11434':'http://127.0.0.1:1234';$('#profile-model').value='';};
  $('#profile-form').onsubmit=e=>{e.preventDefault();busy(e.submitter,async()=>{context.state.profile=await context.api('/profile',{method:'PUT',body:JSON.stringify(readProfile())});toast(txt('Профиль сохранён для новых задач'));await context.refreshModels();inventoryPanel();});};
  $('#refresh-models').onclick=e=>busy(e.currentTarget,async()=>{await context.refreshModels();inventoryPanel();});
  root.querySelectorAll('[data-model-action]').forEach(button=>button.onclick=()=>busy(button,async()=>{if(!$('#profile-form').reportValidity())return;showModelResult({text:txt('Операция выполняется. Загрузка модели может занять несколько минут.')});const result=await context.api('/models/'+button.dataset.modelAction,{method:'POST',body:JSON.stringify(readProfile())});showModelResult(result);await context.refreshModels();}));
+ renderRuntime($('#runtime-controls'),context,readProfile);
  inventoryPanel();context.refreshModels().then(inventoryPanel);
 }
 function historyList(){
@@ -102,5 +105,6 @@ export async function renderPage(page,ctx){
  await ({tasks:tasksPage,models:modelsPage,history:historyPage,settings:settingsPage})[page](root);
 }
 document.addEventListener('tasks-update',taskList);
+document.addEventListener('model-inventory-update',inventoryPanel);
 document.addEventListener('history-update',historyList);
 document.addEventListener('click',e=>{const button=e.target.closest('[data-select-task]');if(button&&context)context.selectTask(button.dataset.selectTask).then(()=>context.navigate('overview')).catch(err=>toast(err.message,true));});

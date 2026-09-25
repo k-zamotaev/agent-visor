@@ -66,8 +66,12 @@ def model_view(result, language):
     for key in ('error', 'note'):
         if value.get(key):
             value[key] = translate(value[key], language)
-    if value.get('kind') == 'unavailable':
+    if value.get('text') and value.get('kind') != 'runtime_estimate':
         value['text'] = translate(value['text'], language)
+    if value.get('service'):
+        value['service'] = dict(value['service'])
+        for key in ('stage', 'error'):
+            value['service'][key] = translate(value['service'].get(key), language)
     if value.get('recommendation'):
         value['recommendation'] = dict(value['recommendation'], reason=translate(value['recommendation']['reason'], language))
     if value.get('benchmark'):

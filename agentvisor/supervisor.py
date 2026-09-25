@@ -113,6 +113,9 @@ class Supervisor:
                     if task['mode'] == 'demo':
                         ready = {'instance': 'demo', 'context': profile['context']}
                     else:
+                        if hasattr(self.runtime, 'prepare'):
+                            self.runtime.prepare(profile, self.cancel, lambda message:
+                                self.store.event(task_id, 'runtime_preparation', message))
                         if not profile['model']:
                             recommendation = self.runtime.inventory(profile)['recommendation']
                             if not recommendation['model']:

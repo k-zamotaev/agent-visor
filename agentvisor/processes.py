@@ -13,8 +13,19 @@ import psutil
 def executable(name):
     found = shutil.which(name)
     if name == 'lms' and not found:
-        candidate = Path.home() / '.lmstudio' / 'bin' / ('lms.exe' if os.name == 'nt' else 'lms')
-        found = str(candidate) if candidate.exists() else None
+        roots = [Path.home() / '.lmstudio']
+        pointer = Path.home() / '.lmstudio-home-pointer'
+        if pointer.is_file():
+            roots.insert(0, Path(pointer.read_text(encoding='utf-8').strip()))
+        if os.name == 'nt' and os.environ.get('LOCALAPPDATA'):
+            roots.append(Path(os.environ['LOCALAPPDATA']) / 'lm-studio')
+        else:
+            roots.append(Path.home() / '.cache' / 'lm-studio')
+        for root in roots:
+            candidate = root / 'bin' / ('lms.exe' if os.name == 'nt' else 'lms')
+            if candidate.is_file():
+                found = str(candidate)
+                break
     if name == 'opencode' and os.name == 'nt':
         roots = [Path(found).parent] if found else []
         roots.append(Path(os.environ.get('APPDATA', '')) / 'npm')
@@ -78,7 +89,7 @@ class WindowsJob:
             self.handle = None
 
 
-def spawn(argv, cwd=None, env=None):
+def spawn(argv, cwd=None, env=None, managed=True):
     environment = dict(os.environ if env is None else env)
     environment.setdefault('PYTHONIOENCODING', 'utf-8')
     environment.setdefault('PYTHONUTF8', '1')
@@ -87,7 +98,7 @@ def spawn(argv, cwd=None, env=None):
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                text=True, encoding='utf-8', errors='replace', **kwargs)
     try:
-        process.visor_job = WindowsJob(process.pid)
+        process.visor_job = WindowsJob(process.pid) if managed else None
     except OSError:
         stop_tree(process)
         raise
@@ -125,8 +136,9 @@ def stop_tree(process):
         process.kill()
 
 
-def capture(argv, timeout=20, cancel=None, include_stderr=False):
-    process = spawn(argv)
+def capture(argv, timeout=20, cancel=None, include_stderr=False, service=False, env=None):
+    # Service commands may start a detached daemon that must outlive the CLI.
+    process = spawn(argv, env=env, managed=not service)
     started = time.monotonic()
     try:
         while True:
@@ -142,7 +154,8 @@ def capture(argv, timeout=20, cancel=None, include_stderr=False):
             except subprocess.TimeoutExpired:
                 continue
     finally:
-        stop_tree(process)
+        if not service or process.poll() is None:
+            stop_tree(process)
 
 
 def recover_process(task):
