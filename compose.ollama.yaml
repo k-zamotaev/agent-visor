@@ -1,0 +1,14 @@
+services:
+  agentvisor:
+    environment:
+      AGENTVISOR_MODEL_RUNTIME: ollama
+      AGENTVISOR_MODEL_URL: http://ollama:11434
+    depends_on:
+      - ollama
+  ollama:
+    image: ollama/ollama:0.13.5
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+volumes:
+  ollama-models:

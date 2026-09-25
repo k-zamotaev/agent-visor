@@ -1,0 +1,9 @@
+.venv
+.git
+.agentvisor-data
+.agentvisor
+.impeccable
+.pytest_cache
+**/__pycache__
+workspace
+.env

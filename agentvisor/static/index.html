@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f7fa">
+  <title>AgentVisor — управление агентскими циклами</title>
+  <link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">К содержимому</a>
+  <aside class="sidebar">
+    <a href="#overview" class="brand"><img src="/static/logo.svg" width="34" height="32" alt="">AgentVisor</a>
+    <nav aria-label="Основная навигация">
+      <button data-page="overview" class="nav-item active" aria-current="page"><i data-icon="home"></i><span>Обзор</span></button>
+      <button data-page="tasks" class="nav-item"><i data-icon="list"></i><span>Задачи</span><span id="task-count" class="nav-count"></span></button>
+      <button data-page="models" class="nav-item"><i data-icon="cube"></i><span>Модели</span></button>
+      <button data-page="history" class="nav-item"><i data-icon="clock"></i><span>История</span></button>
+      <button data-page="settings" class="nav-item"><i data-icon="settings"></i><span>Настройки</span></button>
+    </nav>
+    <div class="sidebar-bottom"><div><span class="status-dot" id="connection-dot"></span><strong id="connection-label">Подключение…</strong></div><small id="node-os">Локальная установка</small><span class="version">AgentVisor <span id="app-version">0.1.0</span></span></div>
+  </aside>
+  <main id="main">
+    <div class="topbar"><div>Рабочая область <span class="slash">/</span> <span id="breadcrumb">Обзор</span></div><div class="topbar-controls"><a id="mode-label" class="mode-label" href="/">Локальное управление</a><label class="language-control"><span>Язык</span><select id="language-picker" aria-label="Язык интерфейса и журнала"><option value="ru">Русский</option><option value="en" lang="en">English</option></select></label></div></div>
+    <div id="connection-error" class="notice error" role="alert" hidden></div>
+    <header class="page-heading">
+      <div><h1 id="page-title">Обзор выполнения</h1><p id="page-subtitle">Все шаги к цели — в одном месте</p></div>
+      <div class="actions" id="overview-actions">
+        <button id="edit-goal" class="button"><i data-icon="edit"></i>Изменить цель</button>
+        <button id="primary-control" class="button primary"><i data-icon="play"></i><span>Новая задача</span></button>
+        <button id="stop-control" class="button blue"><i data-icon="stop"></i>Остановить</button>
+      </div>
+    </header>
+    <section id="page-overview" class="page">
+      <div id="task-picker-wrap" class="task-picker" hidden><label for="task-picker">Текущая задача</label><select id="task-picker"></select><span id="task-status" class="badge"></span></div>
+      <div id="run-notice" class="notice" hidden></div>
+      <div class="metrics">
+        <article class="metric"><span>Выполнено шагов</span><i data-icon="list"></i><strong id="metric-progress">—</strong><small id="progress-caption">План появится после запуска</small></article>
+        <article class="metric"><span>Время работы</span><i data-icon="clock"></i><strong id="metric-time">—</strong><small id="time-caption">Ожидание первой задачи</small></article>
+        <article class="metric"><span>Средняя скорость сессии</span><i data-icon="chart"></i><strong id="metric-speed">—</strong><small id="speed-caption">С учётом инструментов и ожидания</small></article>
+        <article class="metric"><span>Восстановления</span><i data-icon="refresh"></i><strong id="metric-recovery">—</strong><small id="recovery-caption">История повторных запусков</small></article>
+      </div>
+      <div class="dashboard-grid">
+        <section class="panel chart-panel"><div class="panel-heading"><h2>Скорость выполнения</h2><span class="quiet">За запуск</span></div><div id="speed-chart" class="chart-area"></div><p class="chart-note" id="chart-note">Выходные токены / длительность завершённой итерации</p></section>
+        <section class="panel model-panel"><div class="panel-heading"><h2>Модель и оборудование</h2><span id="model-badge" class="badge neutral">Не загружена</span></div><h3 id="model-name">Выберите модель</h3><p class="quiet" id="model-runtime">LM Studio или Ollama</p><p class="context-line"><i data-icon="file"></i><span id="context-status">Контекст ещё не создан</span></p><p class="hardware-line"><i data-icon="chip"></i><span id="gpu-name">Определение оборудования…</span></p><div class="resource"><span>VRAM</span><meter id="vram-meter" min="0" max="100" value="0" aria-label="Использование видеопамяти"></meter><span id="vram-value">—</span></div><div class="resource"><span>RAM</span><meter id="ram-meter" min="0" max="100" value="0" aria-label="Использование оперативной памяти"></meter><span id="ram-value">—</span></div><button class="button blue full" data-page="models"><i data-icon="settings"></i>Настройки запуска</button></section>
+        <section class="panel plan-panel"><div class="panel-heading"><h2>План задачи</h2><div class="plan-summary"><span id="plan-label">Пока нет шагов</span><progress id="plan-progress" max="100" value="0" aria-label="Завершённые шаги"></progress></div><button class="text-button" id="open-progress">PROGRESS.md</button></div><div id="checklist" class="checklist"></div></section>
+        <section class="panel events-panel"><div class="panel-heading"><h2>Последние события</h2></div><div id="recent-events"></div><button class="text-button event-link" data-page="history">Открыть журнал <i data-icon="arrow"></i></button></section>
+      </div>
+    </section>
+    <section id="page-tasks" class="page" hidden></section>
+    <section id="page-models" class="page" hidden></section>
+    <section id="page-history" class="page" hidden></section>
+    <section id="page-settings" class="page" hidden></section>
+    <footer class="page-footer"><span>Контекст сохраняется между сессиями</span><span id="last-updated">Ожидание подключения</span></footer>
+  </main>
+  <dialog id="goal-dialog" aria-labelledby="goal-title"><form id="goal-form"><div class="dialog-heading"><h2 id="goal-title">Изменить цель</h2><button type="button" class="icon-button" data-close aria-label="Закрыть"><i data-icon="close"></i></button></div><p class="quiet">Новая версия цели применяется со следующей итерации. Текущий шаг продолжит работу по прежней цели.</p><label for="goal-text">Цель и критерии готовности</label><textarea id="goal-text" rows="9" required minlength="3" maxlength="20000"></textarea><div class="form-row"><label>Лимит итераций<input id="edit-max" type="number" min="1" max="1000" required></label><label>Таймаут итерации, мин<input id="edit-timeout" type="number" min="1" max="360" required></label></div><div class="dialog-actions"><button type="button" class="button" data-close>Отмена</button><button class="button primary" type="submit">Сохранить изменения</button></div></form></dialog>
+  <dialog id="document-dialog" class="document-dialog" aria-labelledby="document-title"><div class="dialog-heading"><h2 id="document-title">PROGRESS.md</h2><button class="icon-button" data-close aria-label="Закрыть"><i data-icon="close"></i></button></div><pre id="document-content"></pre></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
