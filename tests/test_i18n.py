@@ -51,7 +51,7 @@ def test_stored_english_logs_and_legacy_russian_history(tmp_path):
 
 def test_api_language_does_not_change_task_or_raw_output(tmp_path):
     app = create_app(tmp_path / 'data')
-    with TestClient(app) as client:
+    with TestClient(app, client=('127.0.0.1', 50000)) as client:
         client.headers['Accept-Language'] = 'en-US'
         assert client.post('/api/tasks', json={}).json()['detail'].startswith('Refresh the page')
         client.headers['x-agentvisor-token'] = client.get('/api/session').json()['token']

@@ -2,7 +2,7 @@ import {t as txt,tr,markup,locale,getLanguage,captureStatic,setLanguage} from '.
 import {$,esc,number,gigabytes,time,duration,icon,icons,toast,statuses,active,badge,eventRows,chart} from './ui.js';
 
 const state={token:'',profile:{},tasks:[],task:null,events:[],system:null,modelInfo:null,page:'overview',connected:false,
- selected:localStorage.getItem('agentvisor-task') || '',refreshing:false};
+ selected:localStorage.getItem('agentvisor-task') || '',refreshing:false,reconnecting:false};
 captureStatic();
 $('#language-picker').value=getLanguage();
 let pollCount=0;
@@ -10,10 +10,15 @@ let pollCount=0;
 async function api(path,options={}) {
  const response=await fetch('/api'+path,{...options,headers:{'Content-Type':'application/json','X-AgentVisor-Token':state.token,'Accept-Language':getLanguage(),...options.headers}});
  const body=await response.json();
- if(!response.ok) throw new Error(typeof body.detail==='string'?body.detail:body.detail?.map?.(e=>e.msg).join('; ') || txt('Не удалось выполнить запрос'));
+ if(!response.ok){
+  if(response.status===401&&path!=='/auth/login')showLogin();
+  const error=new Error(typeof body.detail==='string'?body.detail:body.detail?.map?.(e=>e.msg).join('; ') || txt('Не удалось выполнить запрос'));
+  error.status=response.status;throw error;
+ }
  return body;
 }
 function setText(id,value){const el=$(id);if(el && el.textContent!==String(value))el.textContent=value;}
+function showLogin(){state.token='';$('#login-language').value=getLanguage();if(!$('#login-dialog').open)$('#login-dialog').showModal();}
 function selectTask(id){state.selected=id;localStorage.setItem('agentvisor-task',id);return refresh();}
 function renderOverview(){
  const t=state.task, events=state.events, machine=state.system;
@@ -72,6 +77,7 @@ function renderOverview(){
 }
 async function refreshModels(){const language=getLanguage();try{const info=await api('/models');if(language!==getLanguage())return;state.modelInfo=info;renderOverview();}catch(error){if(language===getLanguage())state.modelInfo={online:false,models:[],error:error.message};}}
 async function refresh(){
+ if(!state.token||state.reconnecting)return;
  if(state.refreshing)return state.refreshing;
  const language=getLanguage();
  state.refreshing=(async()=>{
@@ -132,6 +138,7 @@ $('#language-picker').addEventListener('change',async event=>{
   await pending;await Promise.all([refresh(),refreshModels()]);
   await navigate(page);
   for(const value of values){const el=document.getElementById(value.id);if(el){el.value=value.value;if('checked' in el)el.checked=value.checked;}}
+  if(page==='settings')$('#network-host')?.dispatchEvent(new Event('change'));
   document.querySelectorAll('.page details').forEach((el,i)=>{if(disclosures[i]!==undefined)el.open=disclosures[i];});
   if(page==='history'){if($('#history-list')?.contains(document.activeElement))document.activeElement.blur();document.dispatchEvent(new CustomEvent('history-update'));}
  }catch(error){toast(error.message,true);}finally{picker.disabled=false;picker.focus();}
@@ -144,9 +151,18 @@ $('#open-progress').addEventListener('click',()=>{$('#document-content').textCon
 window.addEventListener('hashchange',()=>{const p=location.hash.slice(1)||'overview';if(p!==state.page)navigate(p).catch(e=>toast(e.message,true));});
 window.addEventListener('resize',()=>{if(state.page==='overview')renderOverview();});
 icons();
-try{
+async function connect(){
  const session=await api('/session');state.token=session.token;state.profile=session.profile;state.dataDirectory=session.data_directory;setText('#app-version',session.version);
  await refresh();refreshModels();
  await navigate(location.hash.slice(1)||'overview');
-}catch(error){toast(txt('Не удалось подключиться: ')+error.message,true);}
-setInterval(()=>{if(!document.hidden){refresh();if(++pollCount%15===0)refreshModels();}},2000);
+}
+$('#login-dialog').addEventListener('cancel',event=>event.preventDefault());
+$('#login-language').addEventListener('change',event=>{setLanguage(event.target.value);$('#language-picker').value=getLanguage();$('#login-error').hidden=true;});
+$('#login-form').addEventListener('submit',async event=>{
+ event.preventDefault();const button=event.submitter,error=$('#login-error');button.disabled=true;error.hidden=true;
+ try{await api('/auth/login',{method:'POST',body:JSON.stringify({code:$('#login-code').value})});$('#login-code').value='';$('#login-dialog').close();await connect();}
+ catch(failure){error.textContent=failure.message;error.hidden=false;}
+ finally{button.disabled=false;}
+});
+try{await connect();}catch(error){if(error.status!==401)toast(txt('Не удалось подключиться: ')+error.message,true);}
+setInterval(()=>{if(!document.hidden&&state.token&&!state.reconnecting){refresh();if(++pollCount%15===0)refreshModels();}},2000);

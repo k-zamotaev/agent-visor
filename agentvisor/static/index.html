@@ -57,6 +57,13 @@
   </main>
   <dialog id="goal-dialog" aria-labelledby="goal-title"><form id="goal-form"><div class="dialog-heading"><h2 id="goal-title">Изменить цель</h2><button type="button" class="icon-button" data-close aria-label="Закрыть"><i data-icon="close"></i></button></div><p class="quiet">Новая версия цели применяется со следующей итерации. Текущий шаг продолжит работу по прежней цели.</p><label for="goal-text">Цель и критерии готовности</label><textarea id="goal-text" rows="9" required minlength="3" maxlength="20000"></textarea><div class="form-row"><label>Лимит итераций<input id="edit-max" type="number" min="1" max="1000" required></label><label>Таймаут итерации, мин<input id="edit-timeout" type="number" min="1" max="360" required></label></div><div class="dialog-actions"><button type="button" class="button" data-close>Отмена</button><button class="button primary" type="submit">Сохранить изменения</button></div></form></dialog>
   <dialog id="document-dialog" class="document-dialog" aria-labelledby="document-title"><div class="dialog-heading"><h2 id="document-title">PROGRESS.md</h2><button class="icon-button" data-close aria-label="Закрыть"><i data-icon="close"></i></button></div><pre id="document-content"></pre></dialog>
+  <dialog id="login-dialog" aria-labelledby="login-title"><form id="login-form">
+    <div class="dialog-heading"><h2 id="login-title">Вход в AgentVisor</h2><label class="language-control"><span>Язык</span><select id="login-language" aria-label="Язык формы входа"><option value="ru">Русский</option><option value="en">English</option></select></label></div>
+    <p class="quiet">Код доступа находится в настройках панели на основном компьютере. Для Docker откройте журнал контейнера.</p>
+    <label for="login-code">Код доступа</label><input id="login-code" type="password" autocomplete="current-password" required maxlength="256" aria-describedby="login-error">
+    <p id="login-error" class="form-error" role="alert" hidden></p>
+    <div class="dialog-actions"><button class="button primary" type="submit">Войти</button></div>
+  </form></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 </body>
 </html>

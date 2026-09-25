@@ -2,9 +2,10 @@ services:
   agentvisor:
     build: .
     ports:
-      - "127.0.0.1:${AGENTVISOR_PORT:-8420}:8420"
+      - "${AGENTVISOR_BIND_ADDRESS:-127.0.0.1}:${AGENTVISOR_PORT:-8420}:8420"
     environment:
       AGENTVISOR_DATA: /data
+      AGENTVISOR_ALLOWED_HOSTS: ${AGENTVISOR_ALLOWED_HOSTS:-}
       AGENTVISOR_MODEL_RUNTIME: lmstudio
       AGENTVISOR_MODEL_URL: http://host.docker.internal:1234
       AGENTVISOR_MODEL_TOKEN: ${AGENTVISOR_MODEL_TOKEN:-}

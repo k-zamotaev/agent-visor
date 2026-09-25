@@ -24,6 +24,8 @@ const userContent='Модель <script>user text</script>';
 assert.equal(tr`<label>Модель</label><span>${userContent}</span>`,
              '<label>Model</label><span>'+userContent+'</span>');
 assert.equal(markup('<button>Сохранить профиль</button>'),'<button>Save profile</button>');
+assert.equal(markup('<button>Сохранить</button><button>Применить и перезапустить</button>'),
+             '<button>Save</button><button>Apply and restart</button>');
 assert.equal(tr`Последний короткий замер\nМодель: ${'local'}\nКонтекст: ${32768}\nСкорость запроса: ${50} ток/с\nСкорость генерации: ${'unknown'}\nДлительность: ${3} с\n\n${'original note'}`,
              'Last short benchmark\nModel: local\nContext: 32768\nRequest speed: 50 tok/s\nGeneration speed: unknown\nDuration: 3 s\n\noriginal note');
 setLanguage('ru');

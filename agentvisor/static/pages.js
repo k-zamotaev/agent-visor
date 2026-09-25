@@ -1,5 +1,6 @@
 import {t as txt,tr,markup,locale,getLanguage} from './i18n.js';
 import {$,esc,number,gigabytes,duration,icon,toast,badge,eventRows} from './ui.js';
+import {renderNetwork} from './network.js';
 
 let context;
 const field=(id,label,value='',type='text',attrs='')=>`<div class="field"><label for="${id}">${label}</label><input id="${id}" type="${type}" value="${esc(value)}" ${attrs}></div>`;
@@ -89,15 +90,16 @@ function historyPage(root){
  $('#export-events').onclick=()=>{const blob=new Blob([JSON.stringify({task:context.state.task?.name,events:context.state.events},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='agentvisor-events.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),5000);};historyList();
  if(context.state.focusEvent!==undefined){const selected=document.getElementById('event-'+context.state.focusEvent);selected?.scrollIntoView({block:'center'});selected?.focus({preventScroll:true});}
 }
-function settingsPage(root){
+async function settingsPage(root){
  const m=context.state.system||{},p=context.state.profile;
  const row=(key,value)=>`<div><dt>${key}</dt><dd>${esc(value)}</dd></div>`;
- root.innerHTML=tr`<div class="settings-grid"><section class="panel"><h2>Этот узел</h2><dl class="definition">${row(txt('Платформа'),(m.os||'—')+(m.container?' · Docker':''))}${row(txt('Процессор'),m.cpu||'—')}${row(txt('Потоки CPU'),m.cpu_count||'—')}${row(txt('Оперативная память'),gigabytes(m.ram_total)+txt(' ГБ'))}${row(txt('Видеокарта'),m.gpus?.map(g=>g.name).join(', ')||txt('NVIDIA GPU не обнаружен'))}${row('OpenCode',m.opencode||txt('Не найден в PATH'))}${row('LM Studio CLI',m.lms||txt('Не найден'))}${row(txt('Данные'),context.state.dataDirectory||'.agentvisor-data')}</dl></section>
+ root.innerHTML=tr`<section id="network-settings" class="panel network-panel"></section><div class="settings-grid"><section class="panel"><h2>Этот узел</h2><dl class="definition">${row(txt('Платформа'),(m.os||'—')+(m.container?' · Docker':''))}${row(txt('Процессор'),m.cpu||'—')}${row(txt('Потоки CPU'),m.cpu_count||'—')}${row(txt('Оперативная память'),gigabytes(m.ram_total)+txt(' ГБ'))}${row(txt('Видеокарта'),m.gpus?.map(g=>g.name).join(', ')||txt('NVIDIA GPU не обнаружен'))}${row('OpenCode',m.opencode||txt('Не найден в PATH'))}${row('LM Studio CLI',m.lms||txt('Не найден'))}${row(txt('Данные'),context.state.dataDirectory||'.agentvisor-data')}</dl></section>
  <section class="panel"><h2>Как устроен запуск</h2><div class="prose model-help"><p>Одновременно работает одна задача. Каждая итерация — новая сессия OpenCode; цель, план и результаты остаются в каталоге проекта.</p><p>После перезапуска AgentVisor незаконченная задача остаётся на паузе. Продолжить её можно из обзора.</p><p>Смена цели применяется со следующей итерации. Пауза завершает текущее дерево процессов и сохраняет уже записанные файлы.</p><p>Рекомендации по памяти не гарантируют наилучшую скорость. Измерьте выбранный профиль перед длительным запуском.</p></div><hr class="section-divider"><h3>Подключение к модели</h3><p class="prose model-help">${esc(p.runtime==='ollama'?'Ollama':'LM Studio')} · ${esc(p.base_url)}</p><button class="button" data-page="models">Изменить профиль</button></section></div>`;
+ await renderNetwork($('#network-settings'),context);
 }
 export async function renderPage(page,ctx){
  context=ctx;const root=$('#page-'+page);
- ({tasks:tasksPage,models:modelsPage,history:historyPage,settings:settingsPage})[page](root);
+ await ({tasks:tasksPage,models:modelsPage,history:historyPage,settings:settingsPage})[page](root);
 }
 document.addEventListener('tasks-update',taskList);
 document.addEventListener('history-update',historyList);

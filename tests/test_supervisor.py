@@ -155,7 +155,7 @@ def test_restart_preserves_goal_and_pauses_interrupted_task(tmp_path):
 
 
 def test_api_requires_token_and_rejects_foreign_origin(tmp_path):
-    with TestClient(create_app(tmp_path / 'api')) as client:
+    with TestClient(create_app(tmp_path / 'api'), client=('127.0.0.1', 50000)) as client:
         token = client.get('/api/session').json()['token']
         payload = NewTask(name='Example', workspace=str(tmp_path), goal='A clear goal').model_dump()
         assert client.post('/api/tasks', json=payload).status_code == 403

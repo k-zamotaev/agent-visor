@@ -18,6 +18,9 @@ from .supervisor import Supervisor
 from .tasks import NewTask, Profile, checklist, read_document, state_dir
 from .version import build_id
 from .i18n import event_view, language_from_header, model_view, task_view, translate
+from .instance import lock_instance
+from .network import ensure_network, trusted_hosts
+from .access import authenticated, register_network
 
 
 class TaskEdit(BaseModel):
@@ -25,21 +28,6 @@ class TaskEdit(BaseModel):
     max_iterations: int | None = Field(default=None, ge=1, le=1000)
     timeout_seconds: int | None = Field(default=None, ge=5, le=21600)
     max_hours: float | None = Field(default=None, ge=0.01, le=168)
-
-
-def lock_instance(directory):
-    lock = (directory / 'instance.lock').open('a+b')
-    lock.seek(0)
-    if os.name == 'nt':
-        import msvcrt
-        lock.write(b'0')
-        lock.flush()
-        lock.seek(0)
-        msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
-    else:
-        import fcntl
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    return lock
 
 
 def create_app(data_dir=None):
@@ -62,27 +50,37 @@ def create_app(data_dir=None):
     @asynccontextmanager
     async def lifespan(app):
         lock = lock_instance(directory)
-        app.state.engine = Supervisor(store, runtime)
         try:
-            yield
+            app.state.network = ensure_network(directory)
+            app.state.engine = Supervisor(store, runtime)
+            try:
+                if callable(getattr(app.state, 'startup_notice', None)):
+                    app.state.startup_notice()
+                yield
+            finally:
+                app.state.engine.shutdown()
         finally:
-            app.state.engine.shutdown()
             lock.close()
 
     app = FastAPI(title='AgentVisor', version='0.1.0', lifespan=lifespan,
                   docs_url=None, redoc_url=None)
     app.state.store = store
-    hosts = os.environ.get('AGENTVISOR_ALLOWED_HOSTS', 'localhost,127.0.0.1,[::1],testserver').split(',')
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
+    register_network(app, directory)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts())
 
     @app.middleware('http')
     async def protect(request: Request, call_next):
+        login_request = request.url.path == '/api/auth/login' and request.method == 'POST'
+        if request.url.path.startswith('/api/') and not login_request and not authenticated(request):
+            return error_response(request, 'Введите код доступа к AgentVisor', 401)
         if request.method not in {'GET', 'HEAD', 'OPTIONS'}:
             origin = request.headers.get('origin')
             if origin and origin.rstrip('/') != str(request.base_url).rstrip('/'):
                 return error_response(request, 'Недопустимый источник запроса', 403)
-            if not secrets.compare_digest(request.headers.get('x-agentvisor-token', ''), token):
+            if not login_request and not secrets.compare_digest(request.headers.get('x-agentvisor-token', '').encode(), token.encode()):
                 return error_response(request, 'Обновите страницу: сессия управления изменилась', 403)
+            if app.state.restarting:
+                return error_response(request, 'Панель перезапускается', 503)
             if int(request.headers.get('content-length', '0') or 0) > 65536:
                 return error_response(request, 'Слишком большой запрос', 413)
         response = await call_next(request)
@@ -119,7 +117,7 @@ def create_app(data_dir=None):
     @app.get('/api/health')
     def health():
         return {'status': 'ok', 'version': app.version, 'build_id': current_build,
-                'data_directory': str(directory)}
+                'data_directory': str(directory), 'bind_host': app.state.bind_host}
 
     @app.get('/api/session')
     def session():
@@ -178,7 +176,10 @@ def create_app(data_dir=None):
     @app.post('/api/tasks/{task_id}/{action}')
     def control(task_id: str, action: str, request: Request):
         try:
-            return task_view(app.state.engine.control(task_id, action), language(request))
+            with app.state.engine.lock:
+                if app.state.restarting:
+                    raise HTTPException(503, 'Панель перезапускается')
+                return task_view(app.state.engine.control(task_id, action), language(request))
         except ValueError as error:
             raise HTTPException(409, str(error)) from error
 
@@ -209,6 +210,8 @@ def create_app(data_dir=None):
         if not engine.lock.acquire(blocking=False):
             raise HTTPException(409, 'Операция с моделью уже выполняется')
         try:
+            if app.state.restarting:
+                raise HTTPException(503, 'Панель перезапускается')
             if engine.busy:
                 raise HTTPException(409, 'Сначала поставьте задачу на паузу')
             values = body.model_dump()
