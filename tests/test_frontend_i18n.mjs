@@ -9,6 +9,7 @@ globalThis.document={documentElement:{lang:'ru'}};
 globalThis.fetch=async url=>{assert.equal(url,'/static/locales/en.json');return {ok:true,json:async()=>catalog};};
 const {t,tr,markup,getLanguage,setLanguage}=await import('../agentvisor/static/i18n.js');
 const {number,duration,statuses}=await import('../agentvisor/static/ui.js');
+const {profileStrategy,profileAdvanced,planText}=await import('../agentvisor/static/profile.js');
 
 assert.equal(t('Обзор'),'Обзор');
 setLanguage('en');
@@ -24,6 +25,11 @@ const userContent='Модель <script>user text</script>';
 assert.equal(tr`<label>Модель</label><span>${userContent}</span>`,
              '<label>Model</label><span>'+userContent+'</span>');
 assert.equal(markup('<button>Сохранить профиль</button>'),'<button>Save profile</button>');
+assert.doesNotMatch(profileStrategy({})+profileAdvanced({}),/[А-Яа-яЁё]/);
+const plan=planText({profile:{model:'local',context:65536,output_limit:8192,reasoning:'xhigh',gpu:'auto',flash_attention:'on',cache_type_k:'q8_0',cache_type_v:'q8_0'},
+ reason:'Профиль выбран по памяти runtime и измеренной скорости.',warnings:['Точная оценка памяти недоступна. Использован ограниченный стартовый контекст.']});
+assert.doesNotMatch(plan,/[А-Яа-яЁё]/);
+assert.match(plan,/K \/ V cache: q8_0 \/ q8_0/);
 assert.equal(markup('<button>Сохранить</button><button>Применить и перезапустить</button>'),
              '<button>Save</button><button>Apply and restart</button>');
 assert.equal(tr`Последний короткий замер\nМодель: ${'local'}\nКонтекст: ${32768}\nСкорость запроса: ${50} ток/с\nСкорость генерации: ${'unknown'}\nДлительность: ${3} с\n\n${'original note'}`,

@@ -3,6 +3,7 @@ import json
 import sqlite3
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from .i18n import RAW_EVENTS, translate
@@ -29,10 +30,15 @@ class Store:
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             ''')
 
+    @contextmanager
     def connect(self):
         db = sqlite3.connect(self.path, timeout=15)
         db.row_factory = sqlite3.Row
-        return db
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def create(self, values):
         task = dict(values, id=uuid.uuid4().hex[:12], status='draft', iteration=0,

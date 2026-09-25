@@ -17,6 +17,7 @@ def main():
     parser.add_argument('--runtime', default='lmstudio', choices=['lmstudio', 'ollama'])
     parser.add_argument('--url', default='http://127.0.0.1:1234')
     parser.add_argument('--context', type=int, default=16384)
+    parser.add_argument('--auto-profile', action='store_true')
     args = parser.parse_args()
     root = Path('.agentvisor-data') / ('smoke-' + time.strftime('%Y%m%d-%H%M%S'))
     workspace = root.resolve() / 'workspace'
@@ -28,13 +29,14 @@ def main():
              'Use a one-step checklist in the supplied PROGRESS.md. Read the file to check it. '
              'Then write DONE.md as requested. Do not install packages or access the network.',
         profile=Profile(runtime=args.runtime, base_url=args.url, model=args.model,
+                        profile_mode='auto' if args.auto_profile else 'manual',
                         context=args.context, output_limit=2048),
         max_iterations=4, timeout_seconds=180, max_failures=2,
         max_hours=0.2, backoff_seconds=1, auto_permissions=True,
         verification=[sys.executable, '-c',
                       'from pathlib import Path; assert Path("greeting.txt").read_bytes() == b"AgentVisor ready\\n"']
     ).model_dump())
-    engine = Supervisor(store, ModelRuntime())
+    engine = Supervisor(store, ModelRuntime(root / 'runtime'))
     engine.start(task['id'])
     last = None
     deadline = time.monotonic() + 400

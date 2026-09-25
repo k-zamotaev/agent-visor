@@ -48,7 +48,12 @@ def translate(message, language='ru', depth=0):
 
 
 def task_view(task, language):
-    return dict(task, reason=translate(task.get('reason_source', task.get('reason', '')), language))
+    value = dict(task, reason=translate(task.get('reason_source', task.get('reason', '')), language))
+    if value.get('runtime_health'):
+        value['runtime_health'] = dict(value['runtime_health'], message=translate(value['runtime_health'].get('message'), language))
+    if value.get('profile_plan'):
+        value['profile_plan'] = model_view(value['profile_plan'], language)
+    return value
 
 
 def event_view(event, language):
@@ -58,12 +63,14 @@ def event_view(event, language):
         value['message_original'] = event['message']
         value['message'] = translate(source, language)
         value['data'] = {key: item for key, item in event['data'].items() if key != '_i18n'}
+        if event['kind'] == 'profile_selected':
+            value['data'] = model_view(value['data'], language)
     return value
 
 
 def model_view(result, language):
     value = dict(result)
-    for key in ('error', 'note'):
+    for key in ('error', 'note', 'reason'):
         if value.get(key):
             value[key] = translate(value[key], language)
     if value.get('text') and value.get('kind') != 'runtime_estimate':
@@ -76,4 +83,10 @@ def model_view(result, language):
         value['recommendation'] = dict(value['recommendation'], reason=translate(value['recommendation']['reason'], language))
     if value.get('benchmark'):
         value['benchmark'] = model_view(value['benchmark'], language)
+    if value.get('plan'):
+        value['plan'] = model_view(value['plan'], language)
+    if value.get('warnings'):
+        value['warnings'] = [translate(warning, language) for warning in value['warnings']]
+    if value.get('samples'):
+        value['samples'] = [model_view(sample, language) for sample in value['samples']]
     return value

@@ -14,10 +14,10 @@ _cached = None
 _lock = threading.Lock()
 
 
-def hardware():
+def hardware(force=False):
     global _cached
     with _lock:
-        if _cached and time.time() - _cached['measured_at'] < 8:
+        if not force and _cached and time.time() - _cached['measured_at'] < 8:
             return _cached
         ram = psutil.virtual_memory()
         result = {'os': platform.system(), 'cpu': platform.processor() or platform.machine(),

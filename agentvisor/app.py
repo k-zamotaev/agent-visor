@@ -204,7 +204,10 @@ def create_app(data_dir=None):
 
     @app.get('/api/profile')
     def profile():
-        return store.setting('profile', default_profile)
+        saved = store.setting('profile', default_profile)
+        # Existing explicit context settings must not silently become automatic
+        # when a new task passes through the updated Profile validator.
+        return dict(saved, profile_mode=saved.get('profile_mode', 'manual'))
 
     @app.put('/api/profile')
     def save_profile(body: Profile):
@@ -279,7 +282,7 @@ def create_app(data_dir=None):
 
     @app.post('/api/models/{action}')
     def model_action(action: str, body: Profile, request: Request):
-        if action not in {'load', 'estimate', 'benchmark', 'unload', 'start_service', 'stop_service'}:
+        if action not in {'load', 'estimate', 'benchmark', 'unload', 'start_service', 'stop_service', 'recommend', 'tune'}:
             raise HTTPException(404)
         engine = app.state.engine
         if not engine.lock.acquire(blocking=False):
@@ -290,14 +293,25 @@ def create_app(data_dir=None):
             if engine.busy:
                 raise HTTPException(409, 'Сначала поставьте задачу на паузу')
             values = body.model_dump()
-            if action not in {'start_service', 'stop_service'} and not values['model']:
+            if action not in {'start_service', 'stop_service', 'recommend', 'tune', 'load'} and not values['model']:
                 raise ValueError('Сначала выберите модель')
             if action == 'stop_service':
                 saved_job = store.setting('model_download')
                 job = download_status() if saved_job and saved_job['profile']['base_url'] == values['base_url'] else None
                 if job and job['status'] in {'downloading', 'paused'}:
                     raise HTTPException(409, 'Скачивание модели уже выполняется')
-            result = runtime.ensure(values) if action == 'load' else getattr(runtime, action)(values)
+            if action in {'recommend', 'tune', 'load', 'benchmark'}:
+                plan = runtime.resolve_profile(values, measure=action not in {'recommend', 'benchmark'})
+                if action == 'load':
+                    result = dict(runtime.ensure(plan['profile']), plan=plan, profile=plan['profile'])
+                elif action == 'benchmark':
+                    result = dict(runtime.benchmark(plan['profile']), plan=plan)
+                else:
+                    result = dict(plan, kind='profile_plan')
+                    if action == 'tune':
+                        result['loaded'] = runtime.ensure(plan['profile'])
+            else:
+                result = getattr(runtime, action)(values)
             if action == 'benchmark':
                 store.save_setting('benchmark', result)
             return model_view(result, language(request))

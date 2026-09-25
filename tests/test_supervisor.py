@@ -262,3 +262,65 @@ def test_process_output_decodes_unicode_and_optional_stderr():
                      include_stderr=True)
     assert 'Привет' in result
     assert 'Оценка памяти' in result
+
+
+def test_watchdog_recovers_missing_model_during_hung_agent(tmp_path, monkeypatch):
+    from agentvisor.execution import execute as real_execute
+    monkeypatch.setattr('agentvisor.supervisor.execute',
+                        lambda *args, **kwargs: real_execute(*args, **kwargs, health_interval=0.05))
+    store, engine, task = make(tmp_path, max_failures=2)
+    attempts = []
+
+    class WatchedRuntime(Runtime):
+        def ensure(self, profile, cancel=None):
+            attempts.append(True)
+            return super().ensure(profile, cancel)
+
+        def health(self, profile, instance):
+            return 'Рабочий экземпляр модели выгружен из памяти' if len(attempts) == 1 else None
+
+    engine.runtime = WatchedRuntime()
+    engine.command_builder = lambda task: [sys.executable, str(Path(__file__).with_name('fake_agent.py')),
+                                           str(state_dir(task)), 'hang' if len(attempts) == 1 else 'complete']
+    engine.start(task['id'])
+    finish(engine)
+    result = store.get(task['id'])
+    assert result['status'] == 'completed_unverified'
+    assert result['recoveries'] == 1 and result['iteration'] == 2
+    assert any(event['kind'] == 'runtime_lost' for event in store.events(task['id']))
+    child = int((state_dir(task) / 'child.pid').read_text())
+    assert not psutil.pid_exists(child) or psutil.Process(child).status() == psutil.STATUS_ZOMBIE
+
+
+def test_watchdog_tolerates_one_failed_probe(tmp_path, monkeypatch):
+    from agentvisor.execution import execute as real_execute
+    monkeypatch.setattr('agentvisor.supervisor.execute',
+                        lambda *args, **kwargs: real_execute(*args, **kwargs, health_interval=0.05))
+    store, engine, task = make(tmp_path, 'slow')
+    probes = []
+
+    def health(profile, instance):
+        probes.append(True)
+        return 'temporary timeout' if len(probes) == 1 else None
+
+    engine.runtime.health = health
+    engine.start(task['id'])
+    finish(engine)
+    result = store.get(task['id'])
+    assert result['status'] == 'completed_unverified' and result['iteration'] == 1
+    assert result['recoveries'] == 0 and len(probes) > 1
+
+
+def test_pause_stops_watchdog_without_reloading_model(tmp_path):
+    store, engine, task = make(tmp_path, 'hang')
+    probes = []
+    engine.runtime.health = lambda *args: (probes.append(True) or None)
+    engine.start(task['id'])
+    wait_file(state_dir(task) / 'child.pid')
+    engine.control(task['id'], 'pause')
+    finish(engine)
+    assert store.get(task['id'])['status'] == 'paused'
+    assert store.get(task['id'])['recoveries'] == 0
+    count = len(probes)
+    time.sleep(0.1)
+    assert len(probes) == count

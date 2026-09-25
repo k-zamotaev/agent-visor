@@ -11,7 +11,7 @@ from .processes import spawn, stop_tree
 from .i18n import translate
 
 
-def execute(store, task, argv, cancel, env=None, kind='agent'):
+def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None, health_interval=5):
     started = time.monotonic()
     process = spawn(argv, cwd=task['workspace'], env=env)
     messages = queue.Queue(maxsize=1024)
@@ -20,7 +20,29 @@ def execute(store, task, argv, cancel, env=None, kind='agent'):
     output_tokens, failed, reason = 0, False, None
     error_detail = ''
     heartbeat = started
+    next_health_check, unhealthy = started, 0
     budget = min(task['timeout_seconds'], task['max_hours'] * 3600 - task.get('elapsed', 0))
+
+    def check_runtime():
+        nonlocal next_health_check, unhealthy
+        if not health_check or time.monotonic() < next_health_check or process.poll() is not None:
+            return None
+        try:
+            problem = health_check()
+        except Exception as error:
+            problem = str(error)
+        next_health_check = time.monotonic() + health_interval
+        unhealthy = unhealthy + 1 if problem else 0
+        store.update(task['id'], runtime_health={'checked_at': time.time(),
+                     'ok': not bool(problem), 'message': problem or '', 'failures': unhealthy})
+        if unhealthy == 1:
+            store.event(task['id'], 'runtime_health_warning',
+                        'Проверка модели не пройдена: ' + problem, 'warning')
+        if unhealthy >= 2:
+            store.event(task['id'], 'runtime_lost',
+                        'Модель недоступна. Текущая сессия будет завершена для восстановления.', 'warning')
+            return problem
+        return None
 
     def read(stream, channel):
         try:
@@ -60,6 +82,10 @@ def execute(store, task, argv, cancel, env=None, kind='agent'):
             if duration >= budget:
                 reason, failed = 'timeout', True
                 store.event(task['id'], 'timeout', 'Превышено время итерации или запуска', 'warning')
+                break
+            problem = check_runtime()
+            if problem:
+                reason, failed, error_detail = 'runtime_unavailable', True, problem
                 break
             try:
                 channel, line = messages.get(timeout=0.2)
@@ -110,6 +136,10 @@ def execute(store, task, argv, cancel, env=None, kind='agent'):
                     break
                 if time.monotonic() - started >= budget:
                     reason, failed = 'timeout', True
+                    break
+                problem = check_runtime()
+                if problem:
+                    reason, failed, error_detail = 'runtime_unavailable', True, problem
                     break
     finally:
         stop_tree(process)

@@ -46,10 +46,20 @@ function renderOverview(){
  setText('#model-name',p.model || txt('Выберите модель'));
  setText('#model-runtime',`${p.runtime==='ollama'?'Ollama':'LM Studio'}${p.context?tr` · ${number(p.context)} токенов`:''}`);
  setText('#context-status',t?.documents?.['GOAL.md']&&t?.documents?.['PROGRESS.md']?txt('Контекст задачи сохранён'):txt('Контекст ещё не создан'));
- const isLoaded=state.modelInfo?.models?.some(m=>m.id===p.model&&m.loaded);
+ const health=t?.runtime_health;
+ const watched=t?.status==='running'&&p.watchdog!==false&&health&&Date.now()/1000-health.checked_at<20;
+ const isLoaded=watched?health.ok:state.modelInfo?.models?.some(m=>m.id===p.model&&m.loaded);
  const demoRun=t?.mode==='demo';
  $('#model-badge').className='badge '+(isLoaded&&!demoRun?'success':'neutral');
  setText('#model-badge',demoRun?txt('Без модели'):isLoaded?txt('Загружена'):txt('Не загружена'));
+ const healthNode=$('#runtime-health');
+ if(healthNode){
+  healthNode.hidden=demoRun||!t;
+  healthNode.className='runtime-health '+(watched&&!health.ok?'warning':'');
+  healthNode.textContent=p.watchdog===false?txt('Наблюдение за моделью выключено'):watched?
+   (health.ok?tr`Модель отвечает · проверено ${time(health.checked_at)}`:txt(health.message)):
+   active.has(t?.status)?txt('Наблюдение включится после подготовки модели'):txt('Наблюдение приостановлено вместе с задачей');
+ }
  if(machine){
   const gpu=machine.gpus?.[0];
   setText('#gpu-name',gpu?tr`${gpu.name} · ${gigabytes(gpu.total)} ГБ`:txt('GPU не обнаружен · доступен CPU'));
@@ -139,6 +149,7 @@ $('#language-picker').addEventListener('change',async event=>{
   await navigate(page);
   for(const value of values){const el=document.getElementById(value.id);if(el){el.value=value.value;if('checked' in el)el.checked=value.checked;}}
   if(page==='settings')$('#network-host')?.dispatchEvent(new Event('change'));
+  if(page==='models')$('#profile-form')?.dispatchEvent(new Event('change'));
   document.querySelectorAll('.page details').forEach((el,i)=>{if(disclosures[i]!==undefined)el.open=disclosures[i];});
   if(page==='history'){if($('#history-list')?.contains(document.activeElement))document.activeElement.blur();document.dispatchEvent(new CustomEvent('history-update'));}
  }catch(error){toast(error.message,true);}finally{picker.disabled=false;picker.focus();}

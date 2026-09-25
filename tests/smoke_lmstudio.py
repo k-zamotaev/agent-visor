@@ -22,7 +22,8 @@ def main():
         raise RuntimeError('This test requires a stopped LM Studio service')
     server = subprocess.Popen([sys.executable, '-m', 'uvicorn', 'agentvisor.app:app',
                                '--host', '127.0.0.1', '--port', '8420', '--no-access-log'])
-    profile = Profile(context=4096, output_limit=512).model_dump()
+    profile = Profile(context=4096, output_limit=512, profile_mode='manual',
+                      flash_attention='on', cache_type_k='q8_0', cache_type_v='q8_0').model_dump()
     try:
         with httpx.Client(base_url='http://127.0.0.1:8420', timeout=1000, trust_env=False) as client:
             deadline = time.monotonic() + 20
@@ -72,6 +73,9 @@ def main():
             profile['model'] = next(model['id'] for model in models if 'smollm2' in model['id'].lower())
             ready = post('/api/models/load', profile)
             assert ready['context'] == 4096 and ready['instance'].startswith('agentvisor-'), ready
+            assert ready['load_config']['flashAttention'] is True
+            assert ready['load_config']['llamaKCacheQuantizationType'] == 'q8_0'
+            assert ready['load_config']['llamaVCacheQuantizationType'] == 'q8_0'
             generated = client.post('http://127.0.0.1:1234/v1/chat/completions', json={
                 'model': ready['instance'], 'messages': [{'role': 'user', 'content': 'Say hello.'}],
                 'max_tokens': 12, 'stream': False,

@@ -17,6 +17,18 @@ class Profile(BaseModel):
     context: int = Field(default=16384, ge=4096, le=262144)
     output_limit: int = Field(default=4096, ge=256, le=32768)
     manage_runtime: bool = True
+    profile_mode: Literal['auto', 'manual'] = 'auto'
+    priority: Literal['quality', 'balanced', 'speed'] = 'quality'
+    target_tps: float = Field(default=20, ge=1, le=300)
+    gpu: Literal['auto', 'max', 'off'] = 'auto'
+    reasoning: Literal['auto', 'off', 'on', 'low', 'medium', 'high', 'xhigh'] = 'auto'
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    top_p: float | None = Field(default=None, gt=0, le=1)
+    top_k: int | None = Field(default=None, ge=0, le=200)
+    watchdog: bool = True
+    flash_attention: Literal['auto', 'on', 'off'] = 'auto'
+    cache_type_k: Literal['auto', 'f16', 'q8_0', 'q4_0'] = 'auto'
+    cache_type_v: Literal['auto', 'f16', 'q8_0', 'q4_0'] = 'auto'
 
     @field_validator('base_url')
     @classmethod
@@ -32,6 +44,8 @@ class Profile(BaseModel):
     def budget(self):
         if self.output_limit >= self.context // 2:
             raise ValueError('Лимит ответа должен быть меньше половины контекста')
+        if self.flash_attention == 'off' and self.cache_type_v in {'q8_0', 'q4_0'}:
+            raise ValueError('Квантование V-кэша требует Flash Attention')
         return self
 
 
@@ -117,7 +131,14 @@ def prepare_documents(task, ready):
     provider = {'npm': '@ai-sdk/openai-compatible', 'name': 'AgentVisor local runtime',
                 'options': {'baseURL': profile['base_url'] + '/v1'},
                 'models': {model: {'name': model, 'limit': {'context': ready['context'],
-                           'output': profile['output_limit']}}}}
+                           'output': profile['output_limit']},
+                           'options': {key: profile[key] for key in ('temperature', 'top_p', 'top_k')
+                                       if profile.get(key) is not None}}}}
+    options = provider['models'][model]['options']
+    if profile.get('reasoning', 'auto') != 'auto':
+        # LM Studio advertises native off/on, while its OpenAI endpoint accepts
+        # none/high. The SDK expects camelCase and writes reasoning_effort itself.
+        options['reasoningEffort'] = {'off': 'none', 'on': 'high'}.get(profile['reasoning'], profile['reasoning'])
     config = {'$schema': 'https://opencode.ai/config.json', 'provider': {'agentvisor': provider},
               'model': 'agentvisor/' + model, 'share': 'disabled'}
     write_document(task, 'opencode.json', json.dumps(config, ensure_ascii=False, indent=2))

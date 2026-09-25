@@ -116,7 +116,13 @@ class Supervisor:
                         if hasattr(self.runtime, 'prepare'):
                             self.runtime.prepare(profile, self.cancel, lambda message:
                                 self.store.event(task_id, 'runtime_preparation', message))
-                        if not profile['model']:
+                        if not task.get('resolved_profile') and hasattr(self.runtime, 'resolve_profile'):
+                            plan = self.runtime.resolve_profile(profile, self.cancel, lambda message:
+                                self.store.event(task_id, 'profile_preparation', message))
+                            profile = plan['profile']
+                            self.store.update(task_id, profile_plan=plan)
+                            self.store.event(task_id, 'profile_selected', plan['reason'], data=plan)
+                        elif not profile['model']:
                             recommendation = self.runtime.inventory(profile)['recommendation']
                             if not recommendation['model']:
                                 raise RuntimeError(recommendation['reason'])
@@ -135,8 +141,10 @@ class Supervisor:
                     if self.cancel.is_set():
                         break
                     self.transition(task_id, 'running', f'Итерация {task["iteration"]}: следующий шаг')
+                    health_check = (lambda: self.runtime.health(profile, ready['instance'])) if (
+                        task['mode'] != 'demo' and profile.get('watchdog', True) and hasattr(self.runtime, 'health')) else None
                     result = execute(self.store, task, self.command(task, prompt, ready), self.cancel,
-                                     agent_environment(task))
+                                     agent_environment(task), health_check=health_check)
                     task = self.store.update(task_id, elapsed=base_elapsed + time.monotonic() - started,
                                              output_tokens=task['output_tokens'] + result['output_tokens'],
                                              agent_seconds=task.get('agent_seconds', 0) + result['duration'])
@@ -175,7 +183,8 @@ class Supervisor:
                         profile = (task.get('resolved_profile') or task['profile']).copy()
                         request_size = re.search(r'request \((\d+) tokens\)', message, re.I)
                         needed = int(request_size[1]) + profile['output_limit'] + 4096 if request_size else profile['context'] * 2
-                        context = min(262144, max(profile['context'] * 2, ((needed + 8191) // 8192) * 8192))
+                        maximum = task.get('profile_plan', {}).get('max_context', 262144)
+                        context = min(maximum, max(profile['context'] * 2, ((needed + 8191) // 8192) * 8192))
                         if context > profile['context']:
                             profile['context'] = context
                             self.store.update(task_id, resolved_profile=profile, context_floor=context)

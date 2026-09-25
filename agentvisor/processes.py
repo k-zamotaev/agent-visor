@@ -136,9 +136,9 @@ def stop_tree(process):
         process.kill()
 
 
-def capture(argv, timeout=20, cancel=None, include_stderr=False, service=False, env=None):
+def capture(argv, timeout=20, cancel=None, include_stderr=False, service=False, env=None, cwd=None):
     # Service commands may start a detached daemon that must outlive the CLI.
-    process = spawn(argv, env=env, managed=not service)
+    process = spawn(argv, env=env, cwd=cwd, managed=not service)
     started = time.monotonic()
     try:
         while True:
