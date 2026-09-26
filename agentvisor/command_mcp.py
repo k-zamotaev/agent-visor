@@ -7,6 +7,7 @@ from pathlib import Path
 from .command_sessions import CommandSessions
 from .command_policy import check_command_policy
 from .tool_trace import fingerprint
+from .process_wait import wait_any
 
 
 def schemas():
@@ -28,6 +29,13 @@ def schemas():
         {'name': 'poll', 'description': 'Read the state and bounded output of an owned command. Running is not success. '
          'Use other tools while a server is running; poll a finite command until completed.',
          'inputSchema': {'type': 'object', 'properties': process, 'required': ['process_id'], 'additionalProperties': False}},
+        {'name': 'wait_any', 'description': 'Wait up to one second for any of several existing owned commands. '
+         'Run independent tools while commands run; wait only when their results are dependencies. '
+         'Returns ready results and remaining IDs. Never restart a command just to check its state.',
+         'inputSchema': {'type': 'object', 'properties': {
+             'process_ids': {'type': 'array', 'items': {'type': 'string'}, 'minItems': 1, 'maxItems': 16, 'uniqueItems': True},
+             'yield_ms': {'type': 'integer', 'minimum': 0, 'maximum': 1000}},
+             'required': ['process_ids'], 'additionalProperties': False}},
         {'name': 'stop', 'description': 'Stop only the process tree identified by an exec process_id.',
          'inputSchema': {'type': 'object', 'properties': {'process_id': {'type': 'string'}},
                          'required': ['process_id'], 'additionalProperties': False}},
@@ -127,6 +135,11 @@ class CommandMCP:
                                  data=dict(result, input=dict(command, command=str(command['command'])[:4000])))
             elif name == 'poll':
                 result = self.runner.poll(arguments)
+            elif name == 'wait_any':
+                result = wait_any(self.runner, arguments, self.cancel)
+                for ready in result['ready']:
+                    self.record(ready)
+                return result
             elif name == 'stop':
                 result = self.runner.stop(arguments)
             else:
@@ -150,8 +163,10 @@ class CommandMCP:
         elif method == 'tools/call':
             try:
                 data = self.call(params.get('name'), params.get('arguments') or {})
-                failed = data.get('status') not in {'stopped', 'cancelled'} and (
-                    data.get('status') in {'timed_out', 'output_limit', 'failed'} or bool(data.get('exit_code')))
+                results = data.get('ready', [data])
+                failed = any(item.get('status') not in {'stopped', 'cancelled'} and (
+                    item.get('status') in {'timed_out', 'output_limit', 'failed'} or bool(item.get('exit_code')))
+                    for item in results)
                 result = {'isError': failed, 'content': [{'type': 'text', 'text': json.dumps(data, ensure_ascii=False)}]}
             except (ValueError, OSError, TypeError, InterruptedError) as error:
                 result = {'isError': True, 'content': [{'type': 'text', 'text': str(error)[:6000]}]}

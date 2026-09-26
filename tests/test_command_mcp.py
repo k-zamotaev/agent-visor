@@ -120,7 +120,7 @@ def test_loopback_mcp_transport_and_config(tmp_path):
             assert response['result']['protocolVersion'] == '2025-03-26'
             assert client.post(gateway.mcp_url, json={'jsonrpc': '2.0', 'method': 'notifications/initialized'}).status_code == 202
             listing = client.post(gateway.mcp_url, json=dict(request, method='tools/list')).json()
-            assert {tool['name'] for tool in listing['result']['tools']} == {'exec', 'poll', 'stop'}
+            assert {tool['name'] for tool in listing['result']['tools']} == {'exec', 'poll', 'stop', 'wait_any'}
             unknown = dict(request, method='tools/call', params={'name': 'stop', 'arguments': {'process_id': '1234'}})
             assert client.post(gateway.mcp_url, json=unknown).json()['result']['isError']
         prompt = prepare_documents(task, {'instance': 'fake', 'context': 16384, 'command_mcp_url': gateway.mcp_url})
@@ -144,6 +144,29 @@ def test_equivalent_relative_and_absolute_cwd_reuses_running_process(tmp_path):
         assert second['reused'] and second['process_id'] == first['process_id']
         assert len(commands.runner.sessions) == 1
         assert commands.commands[first['process_id']]['cwd'] == str(working.resolve())
+    finally:
+        commands.close()
+
+
+def test_wait_any_dispatch_records_ready_failures_without_reexecution(tmp_path):
+    store, engine, task = make(tmp_path)
+    commands = CommandMCP(store, task, engine.cancel)
+    try:
+        failed = commands.call('exec', {'command': 'echo evidence; exit 7', 'yield_ms': 0})
+        request = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {
+            'name': 'wait_any', 'arguments': {'process_ids': [failed['process_id']], 'yield_ms': 1000}}}
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            response = commands.dispatch(request)['result']
+            value = json.loads(response['content'][0]['text'])
+            if value['ready']:
+                break
+            assert not response['isError']
+        assert response['isError'] and value['ready'][0]['exit_code'] == 7
+        assert len(commands.runner.sessions) == 1
+        assert commands.memory()[0]['attempts'] == 1
+        commands.dispatch(request)
+        assert commands.memory()[0]['attempts'] == 1
     finally:
         commands.close()
 
