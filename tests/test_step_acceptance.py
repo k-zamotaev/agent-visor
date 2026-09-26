@@ -3,8 +3,31 @@ import json
 import pytest
 
 from agentvisor.step_acceptance import observed_evidence, pending_steps, validate_review
-from agentvisor.tasks import checklist, read_document, write_document
+from agentvisor.tasks import checklist, prepare_documents, read_document, state_dir, write_document
 from test_supervisor import make
+
+
+@pytest.mark.parametrize('role', ['executor', 'diagnostician', 'reviewer'])
+def test_conflicting_root_progress_is_not_task_context(tmp_path, role):
+    from pathlib import Path
+
+    store, _, task = make(tmp_path, step_acceptance=True)
+    root = Path(task['workspace']) / 'PROGRESS.md'
+    root.write_text('# Step 2: Blender MCP integration\n', encoding='utf-8')
+    write_document(task, 'PROGRESS.md', '- [x] Database migrations\n')
+    if role == 'diagnostician':
+        task['recovery_context'] = {'goal_version': task['goal_version'], 'repair': True}
+    review = {'id': 'review-db', 'steps': pending_steps(task)} if role == 'reviewer' else None
+    prompt = prepare_documents(task, {'instance': 'fake', 'context': 16384}, review=review)
+    relative = state_dir(task).relative_to(Path(task['workspace'])).as_posix()
+    assert f'SESSION ROLE: {role}' in prompt
+    assert f'TASK DOCUMENT SCOPE: {relative}/' in prompt
+    assert f'{relative}/PROGRESS.md' in prompt
+    assert 'including after conversation compaction' in prompt
+    assert 'do not adopt the unrelated plan' in prompt
+    assert 'Blender' not in prompt
+    assert pending_steps(task)[0]['text'] == 'Database migrations'
+    assert root.read_text(encoding='utf-8') == '# Step 2: Blender MCP integration\n'
 
 
 def result(**overrides):

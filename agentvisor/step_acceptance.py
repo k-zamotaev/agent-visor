@@ -44,7 +44,8 @@ def mark_steps(task, steps, done):
 def review_prompt(task, review, relative):
     return (
         'You are the independent milestone reviewer in a NEW session. Do not implement the next step. '
-        f'Read {relative}/GOAL.md, project AGENTS.md and the relevant changed files. '
+        f'Read {relative}/GOAL.md, {relative}/PROGRESS.md, project AGENTS.md '
+        'and the relevant changed files. '
         'Check the claimed milestones against the ORIGINAL user goal; reject weakened or missing criteria. '
         'Review only the requested milestone: do not require unrelated deliverables assigned to later steps. '
         'Run meaningful fresh checks and inspect their actual results. For UI behavior, use a real '

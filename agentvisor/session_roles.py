@@ -57,6 +57,12 @@ def role_prompt(role, relative, goal_version):
         'Stay within the existing task, iteration and command budgets; do not start another model '
         'or delegate parallel inference. Preserve the current goal, user constraints and permissions. '
         f'Read {relative}/GOAL.md, {relative}/PROGRESS.md and the project AGENTS.md. '
+        f'TASK DOCUMENT SCOPE: {relative}/ is the authoritative directory for this task. '
+        'Root-level GOAL.md, PROGRESS.md, MEMORY.md, DONE.md and RUN_PROMPT.md may belong '
+        'to unrelated work: do not use them as this task\'s goal, checklist or handoff, and do not '
+        'overwrite them. Resolve bare task-document names under the authoritative directory, '
+        'including after conversation compaction. If a summary or another file conflicts, reread '
+        f'{relative}/GOAL.md and {relative}/PROGRESS.md; do not adopt the unrelated plan. '
     )
     if name == 'diagnostician':
         return shared + (
