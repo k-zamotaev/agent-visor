@@ -346,6 +346,8 @@ class Supervisor:
             return True
 
     def review_steps(self, task, ready, profile):
+        began = time.monotonic()
+        base_elapsed = task['elapsed']
         steps = pending_steps(task)
         if not steps:
             return
@@ -376,7 +378,6 @@ class Supervisor:
         gateway = (InferenceGateway(self.store, task, profile, self.cancel)
                    if task['mode'] == 'opencode' and not self.command_builder else nullcontext())
         ready = {key: value for key, value in ready.items() if key not in {'api_base_url', 'command_mcp_url'}}
-        began = time.monotonic()
         with gateway as inference:
             if inference:
                 ready['api_base_url'] = inference.base_url
@@ -385,12 +386,13 @@ class Supervisor:
             prompt = prepare_documents(task, ready, review=review)
             health_check = (lambda: self.runtime.health(profile, ready['instance'])) if (
                 profile.get('watchdog', True) and hasattr(self.runtime, 'health')) else None
+            task = dict(task, elapsed=base_elapsed + time.monotonic() - began)
             result = execute(self.store, task, self.command(task, prompt, ready), self.cancel,
                              agent_environment(task), inference=inference, health_check=health_check)
         latest = self.store.get(task['id'])
         self.store.update(task['id'], output_tokens=latest['output_tokens'] + result['output_tokens'],
                           agent_seconds=latest.get('agent_seconds', 0) + result['duration'],
-                          elapsed=latest['elapsed'] + time.monotonic() - began)
+                          elapsed=base_elapsed + time.monotonic() - began)
         with self.lock:
             latest = self.store.get(task['id'])
             if self.cancel.is_set():
@@ -412,13 +414,16 @@ class Supervisor:
             records = previous.get('accepted', {}) if (previous.get('goal_version') == task['goal_version'] and
                 previous.get('context_version', 0) == task.get('context_version', 0)) else {}
             records.update(accepted)
-            self.store.update(task['id'], step_reviews={'goal_version': task['goal_version'],
-                              'context_version': task.get('context_version', 0), 'accepted': records})
+            accepted_task = self.store.update(task['id'], step_reviews={'goal_version': task['goal_version'],
+                                             'context_version': task.get('context_version', 0), 'accepted': records})
             self.store.event(task['id'], 'step_review_accepted', 'Этап подтверждён проверкой',
                              data={'review_id': review['id'], 'accepted': accepted})
-            saved = record_skills(self.store, self.store.get(task['id']), accepted)
+        # Optional disk work must not prevent control() from setting cancellation.
+        # Retain the accepted version even if a user edits the goal after the lock.
+        if not self.cancel.is_set():
+            saved = record_skills(self.store, accepted_task, accepted)
             if saved:
                 self.store.event(task['id'], 'skills_saved', 'Сохранены проверенные сценарии для этого проекта',
                                  data={'recipe_ids': saved})
-            checkpoint_after_acceptance(self.store, self.store.get(task['id']))
-            remember_iteration(self.store, task, result)
+            checkpoint_after_acceptance(self.store, accepted_task)
+        remember_iteration(self.store, task, result)

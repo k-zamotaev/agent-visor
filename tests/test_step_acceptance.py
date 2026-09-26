@@ -143,3 +143,47 @@ def test_full_long_command_matches_by_observed_hash(tmp_path):
             {'kind': 'command', 'value': command, 'finding': 'Successful actual output'}]}]}))
     accepted, error = validate_review(task, {'id': 'one', 'steps': steps}, observed_evidence(store, task, cursor))
     assert not error and accepted
+
+
+def test_review_heartbeat_time_is_counted_once(tmp_path, monkeypatch):
+    store, engine, task = make(tmp_path, step_acceptance=True)
+    task = store.update(task['id'], elapsed=100)
+    write_document(task, 'PROGRESS.md', '- [x] Behavior\n')
+    clock = {'now': 1000.0}
+    monkeypatch.setattr('agentvisor.supervisor.time.monotonic', lambda: clock['now'])
+    def execute(store, current, *args, **kwargs):
+        clock['now'] += 50
+        store.update(current['id'], elapsed=150)
+        report(store, current)
+        return result(duration=50)
+    monkeypatch.setattr('agentvisor.supervisor.execute', execute)
+    engine.review_steps(task, {'instance': 'fake', 'context': 16384}, task['profile'])
+    assert store.get(task['id'])['elapsed'] == 150
+
+
+def test_optional_snapshot_does_not_hold_control_lock_or_relabel_new_goal(tmp_path, monkeypatch):
+    import threading
+    store, engine, task = make(tmp_path, step_acceptance=True)
+    write_document(task, 'PROGRESS.md', '- [x] Behavior\n')
+    def execute(store, current, *args, **kwargs):
+        report(store, current)
+        return result()
+    def recipes(store, current, accepted):
+        acquired = threading.Event()
+        def edit():
+            with engine.lock:
+                store.update(current['id'], goal_version=2)
+                acquired.set()
+        worker = threading.Thread(target=edit)
+        worker.start()
+        try:
+            assert acquired.wait(1), 'Optional work is holding the user control lock'
+        finally:
+            worker.join(timeout=2)
+        return []
+    seen = []
+    monkeypatch.setattr('agentvisor.supervisor.execute', execute)
+    monkeypatch.setattr('agentvisor.supervisor.record_skills', recipes)
+    monkeypatch.setattr('agentvisor.supervisor.checkpoint_after_acceptance', lambda store, current: seen.append(current['goal_version']))
+    engine.review_steps(task, {'instance': 'fake', 'context': 16384}, task['profile'])
+    assert seen == [1] and store.get(task['id'])['goal_version'] == 2
