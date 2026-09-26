@@ -61,7 +61,7 @@ class ReviewScenario:
             context = '\n'.join(content_text(message.get('content', '')) for message in body['messages'])
             assert 'independent milestone reviewer in a NEW session' in context
             assert 'Do not implement the next step' in context
-            assert not checklist(self.task)[0]['done'], 'Claimed milestone was not withheld for review'
+            assert checklist(self.task)[0]['review_status'] == 'pending', 'Claim must remain pending during review'
             self.phase = 'wait_start'
             return self.call('exec', {'command': self.command, 'timeout_ms': 10000, 'yield_ms': 0})
         if self.phase == 'wait_start':

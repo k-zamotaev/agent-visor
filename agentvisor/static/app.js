@@ -25,7 +25,8 @@ function renderOverview(){
  const t=state.task, events=state.events, machine=state.system;
  const items=t?.checklist || [], done=items.filter(x=>x.done).length;
  setText('#metric-progress',items.length?`${done} / ${items.length}`:'—');
- setText('#progress-caption',items.length?txt('Отмечено агентом в плане'):txt('План появится после запуска'));
+ const pending=items.filter(x=>x.review_status==='pending').length;
+ setText('#progress-caption',pending?tr`Ожидают проверки: ${pending}`:items.length?txt('Отмечено агентом в плане'):txt('План появится после запуска'));
  setText('#metric-time',t?duration(t.elapsed):'—');
  setText('#time-caption',t?tr`Итерация ${String(t.iteration).padStart(2,'0')} из ${t.max_iterations}`:txt('Ожидание первой задачи'));
  const metricEvents=t?.metrics||events;
@@ -43,7 +44,7 @@ function renderOverview(){
  setText('#plan-label',items.length?tr`${done} из ${items.length} отмечено`:txt('Пока нет шагов'));
  $('#plan-progress').value=items.length?done/items.length*100:0;
  const current=items.findIndex(x=>!x.done);
- $('#checklist').innerHTML=items.length?`<ul>${items.map((s,i)=>`<li class="step ${s.done?'done':i===current?'active':''}"><span class="step-icon">${s.done?icon('check'):''}</span><span class="step-number">${String(i+1).padStart(2,'0')}</span><span class="step-text">${esc(s.text)}</span>${i===current&&active.has(t.status)?markup('<span class="badge">В работе</span>'):''}</li>`).join('')}</ul>`:`<div class="empty">${icon('list')}<strong>${t?txt('Агент готовит план'):txt('Начните с небольшой цели')}</strong><span>${t?txt('Чек-лист из PROGRESS.md появится здесь после первого шага.'):txt('Выберите проект и опишите результат. AgentVisor сохранит контекст между сессиями.')}</span>${t?'':markup('<button class="button primary" data-page="tasks">Создать задачу</button><button class="text-button" id="quick-demo">Посмотреть демонстрацию</button>')}</div>`;
+ $('#checklist').innerHTML=items.length?`<ul>${items.map((s,i)=>`<li class="step ${s.done?'done':i===current?'active':''}"><span class="step-icon">${s.done?icon('check'):''}</span><span class="step-number">${String(i+1).padStart(2,'0')}</span><span class="step-text">${esc(s.text)}</span>${s.review_status==='pending'?markup('<span class="badge">Ожидает проверки</span>'):s.review_status==='accepted'?markup('<span class="badge">Проверено</span>'):i===current&&active.has(t.status)?markup('<span class="badge">В работе</span>'):''}</li>`).join('')}</ul>`:`<div class="empty">${icon('list')}<strong>${t?txt('Агент готовит план'):txt('Начните с небольшой цели')}</strong><span>${t?txt('Чек-лист из PROGRESS.md появится здесь после первого шага.'):txt('Выберите проект и опишите результат. AgentVisor сохранит контекст между сессиями.')}</span>${t?'':markup('<button class="button primary" data-page="tasks">Создать задачу</button><button class="text-button" id="quick-demo">Посмотреть демонстрацию</button>')}</div>`;
  const generationChart=$('#chart-metric').value==='generation';
  const samples=generationChart?metricEvents.filter(e=>e.kind==='generation_sample'&&e.data.tokens_per_second>0).map(e=>({time:e.time,label:time(e.time),rate:e.data.tokens_per_second})):
   completed.filter(e=>e.data.output_tokens>0).map(e=>({time:e.time,label:`№${e.data.iteration}`,rate:e.data.output_tokens/e.data.duration}));

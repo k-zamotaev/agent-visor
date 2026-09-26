@@ -94,7 +94,7 @@ def state_dir(task):
 
 
 def document_path(task, name):
-    if name not in {'GOAL.md', 'PROGRESS.md', 'DONE.md', 'MEMORY.md', 'STEP_REVIEW.json', 'opencode.json'}:
+    if name not in {'GOAL.md', 'PROGRESS.md', 'DONE.md', 'MEMORY.md', 'STEP_REVIEW.json', 'RUN_PROMPT.md', 'opencode.json'}:
         raise ValueError('Неизвестный документ')
     root = state_dir(task)
     target = root / name
@@ -121,9 +121,17 @@ def write_document(task, name, text):
 
 
 def checklist(task):
+    from .step_acceptance import step_id
     content = read_document(task, 'PROGRESS.md')
-    return [{'done': match[0].lower() == 'x', 'text': match[1].strip()}
-            for match in re.findall(r'^\s*(?:[-*]|\d+[.)])\s+\[([ xX])\]\s+(.+)$', content, re.M)]
+    items = [{'done': match[0].lower() == 'x', 'text': match[1].strip()}
+             for match in re.findall(r'^\s*(?:[-*]|\d+[.)])\s+\[([ xX])\]\s+(.+)$', content, re.M)]
+    if task.get('step_acceptance', True) and task.get('mode') != 'demo':
+        reviews = task.get('step_reviews') or {}
+        accepted = reviews.get('accepted', {}) if (reviews.get('goal_version') == task['goal_version'] and
+            reviews.get('context_version', 0) == task.get('context_version', 0)) else {}
+        for index, item in enumerate(items):
+            item['review_status'] = ('accepted' if step_id(index, item['text']) in accepted else 'pending') if item['done'] else 'open'
+    return items
 
 
 def prepare_documents(task, ready, review=None):

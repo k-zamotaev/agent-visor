@@ -39,7 +39,8 @@ def test_supervisor_reviews_fresh_session_before_counting_progress(tmp_path, mon
             store.event(task['id'], 'command_finished', 'python -m pytest', data={
                 'status': 'completed', 'exit_code': 0})
         else:
-            assert not checklist(current)[0]['done']
+            assert checklist(current)[0]['done']
+            assert checklist(current)[0]['review_status'] == 'pending'
             report(store, current, passed=outcome != 'rejected', fresh=outcome != 'missing_evidence',
                    stale=outcome == 'stale')
             if outcome == 'cancelled':
@@ -63,8 +64,7 @@ def test_supervisor_reviews_fresh_session_before_counting_progress(tmp_path, mon
         assert current['progress_watch']['completed'] == 1
     else:
         assert current['status'] == ('paused' if outcome == 'cancelled' else 'blocked')
-        assert not checklist(current)[0]['done']
-        assert current['progress_watch']['completed'] == 0
+        assert checklist(current)[0]['done'] == (outcome != 'rejected')
         if outcome == 'rejected':
             assert 'Expected UI missing' in current['recovery_context']['error']
 
@@ -187,3 +187,55 @@ def test_optional_snapshot_does_not_hold_control_lock_or_relabel_new_goal(tmp_pa
     monkeypatch.setattr('agentvisor.supervisor.checkpoint_after_acceptance', lambda store, current: seen.append(current['goal_version']))
     engine.review_steps(task, {'instance': 'fake', 'context': 16384}, task['profile'])
     assert seen == [1] and store.get(task['id'])['goal_version'] == 2
+
+
+@pytest.mark.parametrize('broken', ['schema', 'rejected', 'crash'])
+def test_review_failure_preserves_earlier_acceptance_and_other_claims(tmp_path, monkeypatch, broken):
+    store, engine, task = make(tmp_path, step_acceptance=True)
+    write_document(task, 'PROGRESS.md', '- [x] First\n- [x] Second\n- [x] Third\n')
+    calls = []
+    def execute(store, current, *args, **kwargs):
+        scope = next(e['data']['steps'] for e in reversed(store.events(task['id']))
+                     if e['kind'] == 'step_review_started')
+        assert len(scope) == 1
+        calls.append(scope[0]['text'])
+        if len(calls) == 1:
+            report(store, current)
+        elif broken == 'schema':
+            write_document(current, 'STEP_REVIEW.json', '{"milestones": []}')
+        elif broken == 'rejected':
+            report(store, current, passed=False)
+        else:
+            raise RuntimeError('Reviewer crashed')
+        return result()
+    monkeypatch.setattr('agentvisor.supervisor.execute', execute)
+    with pytest.raises(Exception):
+        engine.review_steps(task, {'instance': 'fake', 'context': 16384}, task['profile'])
+    items = checklist(store.get(task['id']))
+    assert calls == ['First', 'Second']
+    assert items[0]['review_status'] == 'accepted'
+    assert items[1]['review_status'] == ('open' if broken == 'rejected' else 'pending')
+    assert items[2]['review_status'] == 'pending'
+    assert not engine.complete(store.get(task['id']))
+
+
+def test_failed_worker_preserves_claims_from_before_iteration(tmp_path, monkeypatch):
+    store, engine, task = make(tmp_path, step_acceptance=True, max_failures=1)
+    write_document(task, 'PROGRESS.md', '- [x] Existing milestone\n- [ ] New milestone\n')
+    def execute(*args, **kwargs):
+        write_document(task, 'PROGRESS.md', '- [x] Existing milestone\n- [x] New milestone\n')
+        return result(failed=True, exit_code=1)
+    monkeypatch.setattr('agentvisor.supervisor.execute', execute)
+    engine.run(task['id'])
+    assert [s['done'] for s in checklist(store.get(task['id']))] == [True, False]
+
+
+def test_long_prompt_is_stored_without_windows_command_line_overflow(tmp_path, monkeypatch):
+    store, engine, task = make(tmp_path)
+    engine.command_builder = None
+    monkeypatch.setattr('agentvisor.supervisor.executable', lambda _: 'opencode.cmd')
+    prompt = 'Точный контекст 🐍\n' * 3000
+    argv = engine.command(task, prompt, {'instance': 'same-model'})
+    assert len(' '.join(argv)) < 2000
+    assert 'RUN_PROMPT.md' in argv[-1]
+    assert read_document(task, 'RUN_PROMPT.md') == prompt

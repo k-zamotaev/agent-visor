@@ -46,6 +46,7 @@ def review_prompt(task, review, relative):
         'You are the independent milestone reviewer in a NEW session. Do not implement the next step. '
         f'Read {relative}/GOAL.md, project AGENTS.md and the relevant changed files. '
         'Check the claimed milestones against the ORIGINAL user goal; reject weakened or missing criteria. '
+        'Review only the requested milestone: do not require unrelated deliverables assigned to later steps. '
         'Run meaningful fresh checks and inspect their actual results. For UI behavior, use a real '
         'browser when available and required by the goal. A passing build alone does not prove UI behavior. '
         'Do not edit product code, GOAL.md, PROGRESS.md or DONE.md. Start any needed temporary services '
@@ -124,8 +125,10 @@ def validate_review(task, review, observed):
         for step in review['steps']:
             entry = by_id[step['id']]
             summary = str(entry.get('summary') or '')[:1000]
-            if entry.get('passed') is not True:
+            if entry.get('passed') is False and summary.strip():
                 raise ValueError('Milestone rejected: ' + summary)
+            if entry.get('passed') is not True:
+                raise ValueError('Review must include a boolean verdict and explain rejection')
             proofs = entry.get('evidence')
             if not isinstance(proofs, list) or not 1 <= len(proofs) <= 20:
                 raise ValueError('Milestone has no bounded fresh evidence')

@@ -126,6 +126,10 @@ class Supervisor:
                 '--model', 'agentvisor/' + ready['instance']]
         if task['auto_permissions']:
             argv.append('--auto')
+        if len(prompt.encode('utf-16-le')) > 12000:
+            write_document(task, 'RUN_PROMPT.md', prompt)
+            prompt = ('Read ' + str(state_dir(task) / 'RUN_PROMPT.md') +
+                      ' first. It contains the supervisor instructions for this session; follow them.')
         return argv + [prompt]
 
     def run(self, task_id):
@@ -205,6 +209,7 @@ class Supervisor:
                             self.store.event(task_id, 'effort_selected', 'Выбран режим работы текущей модели', data=effort)
                         health_check = (lambda: self.runtime.health(profile, ready['instance'])) if (
                             task['mode'] != 'demo' and profile.get('watchdog', True) and hasattr(self.runtime, 'health')) else None
+                        prior_claims = {s['id'] for s in pending_steps(task)}
                         result = execute(self.store, task, self.command(task, prompt, ready), self.cancel,
                                          agent_environment(task), health_check=health_check, inference=inference)
                     task = self.store.update(task_id, elapsed=base_elapsed + time.monotonic() - started,
@@ -216,10 +221,10 @@ class Supervisor:
                     if self.cancel.is_set():
                         break
                     if role['name'] == 'diagnostician':
-                        mark_steps(task, pending_steps(task), False)
+                        mark_steps(task, [s for s in pending_steps(task) if s['id'] not in prior_claims], False)
                     if result['failed']:
                         if task.get('step_acceptance', True) and task['mode'] != 'demo':
-                            mark_steps(task, pending_steps(task), False)
+                            mark_steps(task, [s for s in pending_steps(task) if s['id'] not in prior_claims], False)
                         task = observe_progress(self.store, task)
                         raise RuntimeError(f'Ошибка итерации: {result.get("error_detail") or result["reason"] or "exit " + str(result["exit_code"])}')
                     if task.get('step_acceptance', True) and task['mode'] != 'demo':
@@ -346,9 +351,19 @@ class Supervisor:
             return True
 
     def review_steps(self, task, ready, profile):
+        # Review individually so one malformed report cannot invalidate other milestones.
+        while pending_steps(task):
+            self.review_step(task, ready, profile)
+            latest = self.store.get(task['id'])
+            if (latest['goal_version'] != task['goal_version'] or
+                    latest.get('context_version', 0) != task.get('context_version', 0)):
+                return
+            task = latest
+
+    def review_step(self, task, ready, profile):
         began = time.monotonic()
         base_elapsed = task['elapsed']
-        steps = pending_steps(task)
+        steps = pending_steps(task)[:1]
         if not steps:
             return
         review = {'id': uuid.uuid4().hex, 'steps': steps}
@@ -358,7 +373,7 @@ class Supervisor:
                 raise InterruptedError()
             if latest['goal_version'] != task['goal_version']:
                 raise VerificationFailure({'failed': True, 'error_detail': 'Goal changed before review'})
-            if not mark_steps(task, steps, False):
+            if not mark_steps(task, steps, True):
                 raise VerificationFailure({'failed': True, 'error_detail': 'Plan changed before milestone review'})
             write_document(task, 'STEP_REVIEW.json', '')
         self.transition(task['id'], 'verifying', 'Независимая приёмка этапа')
@@ -406,7 +421,9 @@ class Supervisor:
             if not error and not mark_steps(task, steps, True):
                 error = 'Plan changed during milestone review'
             if error:
-                mark_steps(task, steps, False)
+                # A broken report/process is not evidence that implementation failed.
+                if not result['failed'] and error.startswith('Milestone rejected:'):
+                    mark_steps(task, steps, False)
                 self.store.event(task['id'], 'step_review_rejected', 'Этап не прошёл приёмку', 'warning',
                                  data={'review_id': review['id'], 'error': error})
                 raise VerificationFailure(dict(result, failed=True, error_detail=error))
