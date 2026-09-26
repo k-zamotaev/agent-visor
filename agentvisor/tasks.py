@@ -249,4 +249,5 @@ def prepare_documents(task, ready, review=None):
         f' Write progress notes and explanations in {"English" if task.get("language") == "en" else "Russian"}. '
         'Preserve exact user text, code, paths and command output; do not translate them. '
         + role_prompt(role, relative, version) + process_prompt + recovery_prompt + memory_prompt(task) + checkpoint_prompt(task)
+        + task.get('recipe_context', '')
     )
