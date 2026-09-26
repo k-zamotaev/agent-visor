@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .models import DEFAULT_PROFILE
 from .loop_detection import strategy_prompt
+from .task_memory import memory_prompt
 
 
 class Profile(BaseModel):
@@ -87,7 +88,7 @@ def state_dir(task):
 
 
 def document_path(task, name):
-    if name not in {'GOAL.md', 'PROGRESS.md', 'DONE.md', 'opencode.json'}:
+    if name not in {'GOAL.md', 'PROGRESS.md', 'DONE.md', 'MEMORY.md', 'opencode.json'}:
         raise ValueError('Неизвестный документ')
     root = state_dir(task)
     target = root / name
@@ -218,6 +219,10 @@ def prepare_documents(task, ready):
         'record evidence, then stop this session. Keep reasoning short and use tools. '
         f'Before stopping update {relative}/PROGRESS.md with a markdown checklist, results, '
         'the goal version, blockers and the next step. Respect all project AGENTS.md rules. '
+        f'Maintain {relative}/MEMORY.md as a compact handoff (at most 2000 characters), with '
+        f'goal_version: {version} on its own line. Include established facts with evidence references, '
+        'rejected hypotheses and why, environment details worth reusing, and the next concrete action. '
+        'Replace outdated notes rather than appending the entire transcript. '
         'Never mark a failed check as passed. Do not deploy, publish or send messages without authorization. '
         f'Only if the entire current goal is achieved write {relative}/DONE.md with '
         f'goal_version: {version} on its own line and a summary of verification. '
@@ -227,5 +232,5 @@ def prepare_documents(task, ready):
         'so the supervisor can continue recovery. Do not wait for an interactive answer. '
         f' Write progress notes and explanations in {"English" if task.get("language") == "en" else "Russian"}. '
         'Preserve exact user text, code, paths and command output; do not translate them. '
-        + process_prompt + recovery_prompt
+        + process_prompt + recovery_prompt + memory_prompt(task)
     )

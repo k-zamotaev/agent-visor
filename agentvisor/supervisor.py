@@ -14,6 +14,7 @@ from .inference import InferenceGateway
 from .processes import executable, recover_process
 from .recovery import failure_layer, initialize_progress, observe_progress, record_recovery
 from .store import ACTIVE
+from .task_memory import initialize_memory, remember_iteration
 from .tasks import checklist, prepare_documents, read_document, state_dir
 
 
@@ -127,6 +128,7 @@ class Supervisor:
         try:
             while not self.cancel.is_set():
                 task = initialize_progress(self.store, self.store.get(task_id))
+                task = initialize_memory(self.store, task)
                 failures = task.get('failure_streak', 0)
                 if task['iteration'] >= task['max_iterations']:
                     self.transition(task_id, 'blocked', 'Достигнут лимит итераций', 'warning')
@@ -192,6 +194,7 @@ class Supervisor:
                                              agent_seconds=task.get('agent_seconds', 0) + result['duration'])
                     self.store.event(task_id, 'iteration_finished', f'Итерация {task["iteration"]} завершена',
                                      data=dict(result, iteration=task['iteration']))
+                    task = remember_iteration(self.store, task, result)
                     if self.cancel.is_set():
                         break
                     task = observe_progress(self.store, task)
@@ -204,6 +207,7 @@ class Supervisor:
                     stalls = task['progress_watch']['stalls']
                     if stalls:
                         task = record_recovery(self.store, task, result, repair=stalls >= task['stall_limit'])
+                        task = remember_iteration(self.store, task, result)
                     if stalls >= task['stall_limit']:
                         if not task.get('autonomous_recovery', True):
                             self.transition(task_id, 'blocked', 'Нет новых завершённых шагов. Проверьте план и журнал.', 'warning')
@@ -227,6 +231,7 @@ class Supervisor:
                     stalled = task.get('progress_watch', {}).get('stalls', 0) >= task['stall_limit']
                     repair = stalled or failures >= task['max_failures']
                     task = record_recovery(self.store, task, result, message, repair=repair, layer=layer)
+                    task = remember_iteration(self.store, task, result or {'failed': True, 'error_detail': message})
                     if not task.get('autonomous_recovery', True):
                         if stalled:
                             self.transition(task_id, 'blocked', 'Нет новых завершённых шагов. Проверьте план и журнал.', 'warning')
@@ -301,6 +306,7 @@ class Supervisor:
                     latest.get('context_version', 0) > latest.get('applied_context_version', 0)):
                 return False
             self.store.event(task['id'], 'verification_finished', 'Результат независимой проверки', data=result)
+            remember_iteration(self.store, task, result)
             if result['failed']:
                 raise VerificationFailure(result)
             self.transition(task['id'], 'succeeded', 'Все шаги завершены; заданная проверка результата пройдена')
