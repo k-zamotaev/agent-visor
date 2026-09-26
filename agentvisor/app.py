@@ -192,13 +192,20 @@ def create_app(data_dir=None):
             if current['status'] in {'succeeded', 'completed_unverified'}:
                 raise ValueError('Завершённая задача неизменна. Создайте новую задачу.')
             values = body.model_dump(exclude_none=True)
+            values = {key: value for key, value in values.items() if value != current.get(key)}
+            if not values:
+                return task_view(current, language(request))
             if 'goal' in values:
                 if not values['goal'].strip():
                     raise ValueError('Цель не может быть пустой')
                 values['goal_version'] = current['goal_version'] + 1
             result = store.update(task_id, **values)
-            store.event(task_id, 'task_updated', 'Настройки сохранены. Новая цель применяется со следующей итерации.',
-                        data={'goal_version': result['goal_version']})
+            message = ('Настройки сохранены. Новая цель применяется со следующей итерации.' if 'goal' in values
+                       else 'Лимиты сохранены. Прогресс и отработанное время сохранены.')
+            store.event(task_id, 'task_updated', message,
+                        data={'goal_version': result['goal_version'],
+                              'changes': {key: {'before': current.get(key), 'after': value}
+                                          for key, value in values.items() if key != 'goal'}})
             return task_view(result, language(request))
 
     @app.post('/api/tasks/{task_id}/context')
@@ -220,9 +227,12 @@ def create_app(data_dir=None):
             raise HTTPException(409, str(error)) from error
 
     @app.get('/api/tasks/{task_id}/events')
-    def events(task_id: str, request: Request, after: int = 0):
+    def events(task_id: str, request: Request, after: int = 0, grouped: bool = False):
         store.get(task_id)
-        return [event_view(event, language(request)) for event in store.events(task_id, max(0, after))]
+        if grouped and after:
+            raise ValueError('Сгруппированный журнал загружается целиком без параметра after')
+        rows = store.event_groups(task_id) if grouped else store.events(task_id, max(0, after))
+        return [event_view(event, language(request)) for event in rows]
 
     @app.get('/api/profile')
     def profile():

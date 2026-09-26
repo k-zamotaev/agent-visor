@@ -32,16 +32,24 @@ const statusLabels = {draft:'Готова к запуску',preparing:'Подг
 export const statuses = new Proxy(statusLabels,{get:(labels,key)=>txt(labels[key])});
 export const active = new Set(['preparing','running','recovering','verifying','pausing','stopping']);
 export function badge(status) { return `<span class="badge ${['failed','blocked'].includes(status) ? 'warning' : active.has(status) || status === 'succeeded' ? 'success' : 'neutral'}">${esc(statuses[status] || status)}</span>`; }
+export function updateReasoning(root, events, full = false) {
+ for(const event of events){
+  if(event.kind!=='reasoning')continue;
+  const pre=root.querySelector(`#${full?'event':'recent'}-${event.id} .reasoning-entry pre`);
+  if(pre&&pre.textContent!==event.message){const scroll=pre.scrollTop;pre.textContent=event.message;pre.scrollTop=scroll;}
+ }
+}
 export function eventRows(events, full = false, selectedId = null, expandReasoning = false) {
  if (!events.length) return markup('<div class="empty small">События появятся после запуска.<span>Здесь сохраняются шаги, ошибки и восстановления.</span></div>');
  return events.slice().reverse().map(e => {
   const glyph=e.level==='error'?'alert':e.level==='warning'?'refresh':({running:'play',preparing:'chip',model_step:'cube',document_saved:'file',tool:'file',verification_finished:'check',succeeded:'check',paused:'pause',stopped:'stop',iteration_finished:'clock'})[e.kind]||'info';
   const selected=String(e.id)===String(selectedId);
-  const start=full?`<article id="event-${e.id}" tabindex="-1" class="event ${esc(e.level)} ${selected?'selected-event':''}">`:`<button type="button" class="event recent-event ${esc(e.level)}" data-event-id="${e.id}" aria-label="${esc(time(e.time)+' '+e.message+txt(' — открыть запись журнала'))}">`;
   const reasoning=e.kind==='reasoning';
+  const article=full||reasoning;
+  const start=article?`<article id="${full?'event':'recent'}-${e.id}" tabindex="-1" class="event ${esc(e.level)} ${selected?'selected-event':''}">`:`<button type="button" class="event recent-event ${esc(e.level)}" data-event-id="${e.id}" aria-label="${esc(time(e.time)+' '+e.message+txt(' — открыть запись журнала'))}">`;
   const label=reasoning?txt('Рассуждение модели'):e.kind==='text'?txt('Ответ модели'):e.kind;
-  const message=reasoning&&full?`<details class="reasoning-entry" ${selected||expandReasoning?'open':''}><summary>${txt('Рассуждение модели')}</summary><pre>${esc(e.message)}</pre></details>`:`<span class="event-message">${esc(e.message)}</span>`;
-  return `${start}<span class="event-icon">${icon(glyph)}</span><time>${time(e.time)}</time><span class="event-body">${message}${full ? tr`<small>${esc(label)}</small><details ${selected&&!reasoning?'open':''}><summary>Подробности</summary><pre>${esc(JSON.stringify({time:new Date(e.time*1000).toISOString(),kind:e.kind,...e.data},null,2))}</pre></details>` : `<small>${reasoning?txt('Рассуждение модели'):e.level==='warning'?txt('Событие требует внимания'):e.kind==='model_step'?txt('Ответ модели'):txt('Открыть запись журнала')}</small>`}</span>${full?'</article>':'</button>'}`;
+  const message=reasoning?`<details class="reasoning-entry" ${!full||selected||expandReasoning?'open':''}><summary>${txt('Рассуждение модели')}</summary><pre>${esc(e.message)}</pre></details>`:`<span class="event-message">${esc(e.message)}</span>`;
+  return `${start}<span class="event-icon">${icon(glyph)}</span><time>${time(e.time)}</time><span class="event-body">${message}${full ? tr`<small>${esc(label)}</small><details ${selected&&!reasoning?'open':''}><summary>Подробности</summary><pre>${esc(JSON.stringify({time:new Date(e.time*1000).toISOString(),kind:e.kind,fragment_count:e.fragment_count,first_event_id:e.first_event_id,last_event_id:e.last_event_id,...e.data},null,2))}</pre></details>` : reasoning?tr`<button type="button" class="text-button" data-event-id="${e.id}">Открыть запись журнала</button>`:`<small>${e.level==='warning'?txt('Событие требует внимания'):e.kind==='model_step'?txt('Ответ модели'):txt('Открыть запись журнала')}</small>`}</span>${article?'</article>':'</button>'}`;
  }).join('');
 }
 export function chart(samples, annotations = [], measuredWidth = 720, generation = false) {

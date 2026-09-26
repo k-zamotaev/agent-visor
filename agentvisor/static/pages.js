@@ -1,5 +1,5 @@
 import {t as txt,tr,markup,locale,getLanguage} from './i18n.js';
-import {$,esc,number,gigabytes,duration,icon,toast,badge,eventRows} from './ui.js';
+import {$,esc,number,gigabytes,duration,icon,toast,badge,eventRows,updateReasoning} from './ui.js';
 import {renderNetwork} from './network.js';
 import {renderRuntime} from './runtime.js';
 import {profileStrategy,profileAdvanced,readStrategy,bindStrategy,planText} from './profile.js';
@@ -88,15 +88,19 @@ function historyList(){
  const search=$('#history-search').value.toLowerCase(),level=$('#history-level').value,kind=$('#history-kind').value;
  const events=context.state.events;
  const rows=events.filter(e=>(!level||level===e.level)&&(!kind||kind===e.kind||kind==='tool'&&['tool_started','tool_finished','command_started','command_finished'].includes(e.kind))&&(!search||`${e.message} ${e.kind} ${JSON.stringify(e.data)}`.toLowerCase().includes(search)));
- const version=`${getLanguage()}:${rows.at(-1)?.id}:${rows.length}:${search}:${level}:${kind}:${context.state.focusEvent}`;
+ const filters=`${getLanguage()}:${search}:${level}:${kind}:${context.state.focusEvent}`;
+ const version=`${filters}:${rows.map(e=>`${e.id}:${e.last_event_id}:${e.message.length}`).join(',')}`;
+ updateReasoning(root,rows,true);
  if(root.dataset.version!==version&&!root.contains(document.activeElement)){
+  const disclosures=root.dataset.filters===filters?[...root.querySelectorAll('article')].map(el=>({id:el.id,open:[...el.querySelectorAll('details')].map(d=>d.open)})):[];
   root.innerHTML=rows.length?eventRows(rows,true,context.state.focusEvent,kind==='reasoning'):markup('<div class="empty small">Нет событий по выбранному фильтру.</div>');
-  root.dataset.version=version;
+  for(const entry of disclosures){document.getElementById(entry.id)?.querySelectorAll('details').forEach((el,i)=>{el.open=entry.open[i];});}
+  root.dataset.version=version;root.dataset.filters=filters;
  }
  $('#history-task').textContent=context.state.task?.name||txt('Выберите задачу на странице обзора');
 }
 function historyPage(root){
- root.innerHTML=tr`<section class="panel"><div class="panel-heading"><div><h2 id="history-task"></h2><p class="prose">Последние 200 событий выбранной задачи. Полный журнал хранится в локальной базе.</p><p class="prose">Рассуждения видны, если модель передаёт их в ответе. Они не являются проверенным результатом работы.</p></div></div><div class="toolbar"><input id="history-search" type="search" aria-label="Поиск по событиям" placeholder="Поиск по событиям"><select id="history-kind" aria-label="Тип событий"><option value="">Весь ход работы</option><option value="reasoning">Рассуждения модели</option><option value="text">Ответы модели</option><option value="tool">Инструменты</option></select><select id="history-level" aria-label="Уровень событий"><option value="">Все события</option><option value="info">Информация</option><option value="warning">Предупреждения</option><option value="error">Ошибки</option></select><button class="button" id="export-events">${icon('download')}Скачать JSON</button></div><div id="history-list" class="history-events"></div></section>`;
+ root.innerHTML=tr`<section class="panel"><div class="panel-heading"><div><h2 id="history-task"></h2><p class="prose">Последние 200 записей выбранной задачи. Фрагменты рассуждений одного ответа объединены в полный текст. Исходные события сохранены в локальной базе.</p><p class="prose">Рассуждения видны, если модель передаёт их в ответе. Они не являются проверенным результатом работы.</p></div></div><div class="toolbar"><input id="history-search" type="search" aria-label="Поиск по событиям" placeholder="Поиск по событиям"><select id="history-kind" aria-label="Тип событий"><option value="">Весь ход работы</option><option value="reasoning">Рассуждения модели</option><option value="text">Ответы модели</option><option value="tool">Инструменты</option></select><select id="history-level" aria-label="Уровень событий"><option value="">Все события</option><option value="info">Информация</option><option value="warning">Предупреждения</option><option value="error">Ошибки</option></select><button class="button" id="export-events">${icon('download')}Скачать JSON</button></div><div id="history-list" class="history-events"></div></section>`;
  $('#history-search').oninput=historyList;$('#history-level').onchange=historyList;$('#history-kind').onchange=historyList;
  $('#export-events').onclick=()=>{const blob=new Blob([JSON.stringify({task:context.state.task?.name,events:context.state.events},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='agentvisor-events.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),5000);};historyList();
  if(context.state.focusEvent!==undefined){const selected=document.getElementById('event-'+context.state.focusEvent);selected?.scrollIntoView({block:'center'});selected?.focus({preventScroll:true});}

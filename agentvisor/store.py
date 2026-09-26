@@ -137,6 +137,47 @@ class Store:
                               "ORDER BY id DESC LIMIT 400", (task_id,)).fetchall()[::-1]
         return [dict(row, data=json.loads(row['data'])) for row in rows]
 
+    def event_groups(self, task_id, limit=200):
+        """Read complete reasoning responses, including fragments outside the raw tail.
+
+        Raw events stay immutable for diagnostics and incremental consumers. Only
+        reasoning with an explicit request identity is joined, in original order.
+        """
+        key = """CASE WHEN kind='reasoning'
+                   AND json_type(data, '$.request_id')='text'
+                   AND json_extract(data, '$.request_id')!=''
+                   THEN 'reasoning:' || json_extract(data, '$.request_id')
+                   ELSE 'event:' || id END"""
+        with self.connect() as db:
+            rows = db.execute(f'''
+                WITH selected AS (
+                    SELECT {key} AS group_key, MAX(id) AS last_id
+                    FROM events WHERE task_id=? GROUP BY group_key
+                    ORDER BY last_id DESC LIMIT ?
+                )
+                SELECT events.*, {key} AS group_key FROM events
+                WHERE task_id=? AND ({key}) IN (SELECT group_key FROM selected)
+                ORDER BY events.id
+            ''', (task_id, limit, task_id)).fetchall()
+        groups = {}
+        for row in rows:
+            group_key = row['group_key']
+            if group_key not in groups:
+                event = {name: row[name] for name in row.keys() if name != 'group_key'}
+                event['data'] = json.loads(event['data'])
+                event.update(first_event_id=event['id'], last_event_id=event['id'],
+                             fragment_count=0)
+                groups[group_key] = (event, [])
+            event, fragments = groups[group_key]
+            fragments.append(row['message'])
+            event['last_event_id'] = row['id']
+            event['fragment_count'] += 1
+        result = []
+        for event, fragments in groups.values():
+            event['message'] = ''.join(fragments)
+            result.append(event)
+        return sorted(result, key=lambda event: event['last_event_id'])
+
     def setting(self, key, default=None):
         with self.connect() as db:
             row = db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()

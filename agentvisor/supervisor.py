@@ -76,6 +76,10 @@ class Supervisor:
             task = self.store.get(task_id)
             if task['status'] in {'succeeded', 'completed_unverified'}:
                 raise ValueError('Запуск завершён. Для новой цели создайте задачу.')
+            if task['elapsed'] >= task['max_hours'] * 3600:
+                raise ValueError('Лимит времени исчерпан. Увеличьте общий предел часов в лимитах задачи.')
+            if task['iteration'] >= task['max_iterations']:
+                raise ValueError('Лимит итераций исчерпан. Увеличьте его в лимитах задачи.')
             if not Path(task['workspace']).is_dir():
                 raise ValueError('Рабочий каталог недоступен')
             if task['mode'] == 'opencode' and not executable('opencode') and not self.command_builder:

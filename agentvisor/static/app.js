@@ -1,5 +1,6 @@
 import {t as txt,tr,markup,locale,getLanguage,captureStatic,setLanguage} from './i18n.js';
-import {$,esc,number,gigabytes,time,duration,icon,icons,toast,statuses,active,badge,eventRows,chart} from './ui.js';
+import {$,esc,number,gigabytes,time,duration,icon,icons,toast,statuses,active,badge,eventRows,updateReasoning,chart} from './ui.js';
+import {bindLimits,renderLimits,openLimits,budgetExhausted} from './limits.js';
 
 const state={token:'',profile:{},tasks:[],task:null,events:[],system:null,modelInfo:null,page:'overview',connected:false,
  selected:localStorage.getItem('agentvisor-task') || '',refreshing:false,reconnecting:false};
@@ -23,6 +24,7 @@ function showLogin(){state.token='';$('#login-language').value=getLanguage();if(
 function selectTask(id){state.selected=id;localStorage.setItem('agentvisor-task',id);return refresh();}
 function renderOverview(){
  const t=state.task, events=state.events, machine=state.system;
+ renderLimits(t);
  const items=t?.checklist || [], done=items.filter(x=>x.done).length;
  setText('#metric-progress',items.length?`${done} / ${items.length}`:'—');
  const pending=items.filter(x=>x.review_status==='pending').length;
@@ -52,7 +54,12 @@ function renderOverview(){
  $('#speed-chart').innerHTML=chart(samples,recoveries,$('#speed-chart').clientWidth,generationChart);
  setText('#chart-note',generationChart?txt('Скорость ответа по потоку токенов · без ожидания первого токена и работы инструментов'):txt('Выходные токены / длительность завершённой итерации'));
  const recent=$('#recent-events'),eventKey=getLanguage()+events.slice(-4).map(e=>e.id+':'+e.message).join('|');
- if(recent.dataset.events!==eventKey&&!recent.contains(document.activeElement)){recent.innerHTML=eventRows(events.slice(-4));recent.dataset.events=eventKey;}
+ updateReasoning(recent,events.slice(-4));
+ if(recent.dataset.events!==eventKey&&!recent.contains(document.activeElement)){
+  const reading=[...recent.querySelectorAll('.reasoning-entry')].map(el=>({id:el.closest('article').id,open:el.open,scroll:el.querySelector('pre').scrollTop}));
+  recent.innerHTML=eventRows(events.slice(-4));recent.dataset.events=eventKey;
+  for(const entry of reading){const el=document.getElementById(entry.id);if(el){el.querySelector('details').open=entry.open;el.querySelector('pre').scrollTop=entry.scroll;}}
+ }
  const p=t?.resolved_profile || t?.profile || state.profile;
  setText('#model-name',p.model || txt('Выберите модель'));
  setText('#model-runtime',`${p.runtime==='ollama'?'Ollama':'LM Studio'}${p.context?tr` · ${number(p.context)} токенов`:''}`);
@@ -91,7 +98,7 @@ function renderOverview(){
  $('#stop-control').disabled=!t||!active.has(t.status);
  const primary=$('#primary-control');
  primary.disabled=!!t&&['pausing','stopping'].includes(t.status);
- primary.innerHTML=!t?tr`${icon('plus')}<span>Новая задача</span>`:active.has(t.status)?tr`${icon('pause')}<span>Пауза</span>`:['succeeded','completed_unverified'].includes(t.status)?tr`${icon('plus')}<span>Новая задача</span>`:`${icon('play')}<span>${t.status==='draft'?txt('Запустить'):txt('Продолжить')}</span>`;
+ primary.innerHTML=!t?tr`${icon('plus')}<span>Новая задача</span>`:active.has(t.status)?tr`${icon('pause')}<span>Пауза</span>`:['succeeded','completed_unverified'].includes(t.status)?tr`${icon('plus')}<span>Новая задача</span>`:budgetExhausted(t)?tr`${icon('edit')}<span>Изменить лимиты</span>`:`${icon('play')}<span>${t.status==='draft'?txt('Запустить'):txt('Продолжить')}</span>`;
  $('#open-progress').disabled=!t;
  $('#run-notice').hidden=!t||(!t.reason&&t.mode!=='demo');
  $('#run-notice').className='notice '+(['blocked','failed'].includes(t?.status)?'warning':'');
@@ -114,7 +121,7 @@ async function refresh(){
   if(language!==getLanguage())return;
   state.tasks=tasks;state.system=system;
   if(!tasks.some(t=>t.id===state.selected))state.selected=tasks[0]?.id || '';
-  if(state.selected){const [task,events]=await Promise.all([api(`/tasks/${state.selected}`),api(`/tasks/${state.selected}/events`)]);if(language!==getLanguage())return;state.task=task;state.events=events;}
+  if(state.selected){const [task,events]=await Promise.all([api(`/tasks/${state.selected}`),api(`/tasks/${state.selected}/events?grouped=true`)]);if(language!==getLanguage())return;state.task=task;state.events=events;}
   state.connected=true;$('#connection-error').hidden=true;$('#connection-dot').classList.remove('off');
   setText('#connection-label',txt('Локальный узел'));setText('#node-os',tr`${system.os} · подключён`);setText('#task-count',tasks.length||'');
   setText('#last-updated',tr`Обновлено ${new Date().toLocaleTimeString(locale(),{hour12:false})}`);
@@ -179,7 +186,8 @@ $('#language-picker').addEventListener('change',async event=>{
   if(page==='history'){if($('#history-list')?.contains(document.activeElement))document.activeElement.blur();document.dispatchEvent(new CustomEvent('history-update'));}
  }catch(error){toast(error.message,true);}finally{picker.disabled=false;picker.focus();}
 });
-$('#primary-control').addEventListener('click',()=>!state.task||['succeeded','completed_unverified'].includes(state.task.status)?navigate('tasks'):control(active.has(state.task.status)?'pause':'start'));
+bindLimits({state,api,refresh});
+$('#primary-control').addEventListener('click',()=>!state.task||['succeeded','completed_unverified'].includes(state.task.status)?navigate('tasks'):active.has(state.task.status)?control('pause'):budgetExhausted(state.task)?openLimits():control('start'));
 $('#stop-control').addEventListener('click',()=>control('stop'));
 $('#edit-goal').addEventListener('click',()=>{if(!state.task)return;$('#goal-text').value=state.task.goal;$('#edit-max').value=state.task.max_iterations;$('#edit-timeout').value=Math.round(state.task.timeout_seconds/60);$('#goal-dialog').showModal();});
 $('#goal-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;try{await api(`/tasks/${state.task.id}`,{method:'PATCH',body:JSON.stringify({goal:$('#goal-text').value,max_iterations:Number($('#edit-max').value),timeout_seconds:Number($('#edit-timeout').value)*60})});$('#goal-dialog').close();toast(txt('Изменения сохранены'));await refresh();}catch(e){toast(e.message,true);}finally{button.disabled=false;}});

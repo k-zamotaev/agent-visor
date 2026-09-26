@@ -36,6 +36,19 @@
     <section id="page-overview" class="page">
       <div id="task-picker-wrap" class="task-picker" hidden><label for="task-picker">Текущая задача</label><select id="task-picker"></select><span id="task-status" class="badge"></span></div>
       <div id="run-notice" class="notice" hidden></div>
+      <details id="limits-panel" class="context-panel" hidden>
+        <summary>Лимиты задачи <span id="limits-summary" class="quiet"></span></summary>
+        <form id="limits-form">
+          <p id="limits-usage" class="prose"></p>
+          <p id="limits-help" class="prose">Это общие пределы за всё время задачи, включая предыдущие запуски. Изменение лимитов сохраняет цель, прогресс и отработанное время. Лимиты проверяются перед следующей итерацией.</p>
+          <div class="form-row">
+            <label for="limit-hours">Общий предел, часов<input id="limit-hours" type="number" min="0.01" max="168" step="0.01" required aria-describedby="limits-help"></label>
+            <label for="limit-iterations">Лимит итераций<input id="limit-iterations" type="number" min="1" max="1000" step="1" required></label>
+          </div>
+          <p id="limits-error" class="form-error" role="alert" hidden></p>
+          <div class="form-actions"><button class="button" type="submit" value="save">Сохранить лимиты</button><button id="limits-resume" class="button primary" type="submit" value="resume">Сохранить и продолжить</button></div>
+        </form>
+      </details>
       <details id="context-panel" class="context-panel" hidden>
         <summary>Добавить контекст <span id="context-delivery" class="quiet"></span></summary>
         <form id="context-form">
