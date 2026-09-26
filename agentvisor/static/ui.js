@@ -32,17 +32,20 @@ const statusLabels = {draft:'Готова к запуску',preparing:'Подг
 export const statuses = new Proxy(statusLabels,{get:(labels,key)=>txt(labels[key])});
 export const active = new Set(['preparing','running','recovering','verifying','pausing','stopping']);
 export function badge(status) { return `<span class="badge ${['failed','blocked'].includes(status) ? 'warning' : active.has(status) || status === 'succeeded' ? 'success' : 'neutral'}">${esc(statuses[status] || status)}</span>`; }
-export function eventRows(events, full = false, selectedId = null) {
+export function eventRows(events, full = false, selectedId = null, expandReasoning = false) {
  if (!events.length) return markup('<div class="empty small">События появятся после запуска.<span>Здесь сохраняются шаги, ошибки и восстановления.</span></div>');
  return events.slice().reverse().map(e => {
   const glyph=e.level==='error'?'alert':e.level==='warning'?'refresh':({running:'play',preparing:'chip',model_step:'cube',document_saved:'file',tool:'file',verification_finished:'check',succeeded:'check',paused:'pause',stopped:'stop',iteration_finished:'clock'})[e.kind]||'info';
   const selected=String(e.id)===String(selectedId);
   const start=full?`<article id="event-${e.id}" tabindex="-1" class="event ${esc(e.level)} ${selected?'selected-event':''}">`:`<button type="button" class="event recent-event ${esc(e.level)}" data-event-id="${e.id}" aria-label="${esc(time(e.time)+' '+e.message+txt(' — открыть запись журнала'))}">`;
-  return `${start}<span class="event-icon">${icon(glyph)}</span><time>${time(e.time)}</time><span class="event-body"><span class="event-message">${esc(e.message)}</span>${full ? tr`<small>${esc(e.kind)}</small><details ${selected?'open':''}><summary>Подробности</summary><pre>${esc(JSON.stringify({time:new Date(e.time*1000).toISOString(),kind:e.kind,...e.data},null,2))}</pre></details>` : `<small>${e.level==='warning'?txt('Событие требует внимания'):e.kind==='model_step'?txt('Ответ модели'):txt('Открыть запись журнала')}</small>`}</span>${full?'</article>':'</button>'}`;
+  const reasoning=e.kind==='reasoning';
+  const label=reasoning?txt('Рассуждение модели'):e.kind==='text'?txt('Ответ модели'):e.kind;
+  const message=reasoning&&full?`<details class="reasoning-entry" ${selected||expandReasoning?'open':''}><summary>${txt('Рассуждение модели')}</summary><pre>${esc(e.message)}</pre></details>`:`<span class="event-message">${esc(e.message)}</span>`;
+  return `${start}<span class="event-icon">${icon(glyph)}</span><time>${time(e.time)}</time><span class="event-body">${message}${full ? tr`<small>${esc(label)}</small><details ${selected&&!reasoning?'open':''}><summary>Подробности</summary><pre>${esc(JSON.stringify({time:new Date(e.time*1000).toISOString(),kind:e.kind,...e.data},null,2))}</pre></details>` : `<small>${reasoning?txt('Рассуждение модели'):e.level==='warning'?txt('Событие требует внимания'):e.kind==='model_step'?txt('Ответ модели'):txt('Открыть запись журнала')}</small>`}</span>${full?'</article>':'</button>'}`;
  }).join('');
 }
-export function chart(samples, annotations = [], measuredWidth = 720) {
- if (!samples.length) return tr`<div class="empty chart-empty">${icon('chart')}<strong>Пока нет измерений</strong><span>После каждой итерации здесь появится её средняя скорость.</span></div>`;
+export function chart(samples, annotations = [], measuredWidth = 720, generation = false) {
+ if (!samples.length) return tr`<div class="empty chart-empty">${icon('chart')}<strong>Пока нет измерений</strong><span>${generation?txt('Измерения появятся после нового ответа модели.'):txt('После каждой итерации здесь появится её средняя скорость.')}</span></div>`;
  const max = Math.max(10, ...samples.map(s => s.rate)) * 1.15;
  const width = Math.max(240, Math.round(measuredWidth)), height=170, left=38, right=width-22;
  const x=i=>left+i/Math.max(1,samples.length-1)*(right-left), y=rate=>height-rate/max*130;
@@ -50,5 +53,5 @@ export function chart(samples, annotations = [], measuredWidth = 720) {
  const lines=[0,1,2,3].map(i=>{const lineY=height-i/3*130;return `<line x1="${left}" x2="${right}" y1="${lineY}" y2="${lineY}" stroke="var(--line)"/><text x="${left-10}" y="${lineY+4}" text-anchor="end">${Math.round(max*i/3)}</text>`;}).join('');
  const labels=samples.filter((_,i)=>i===0||i===samples.length-1||i===Math.floor(samples.length/2)).map(s=>`<text x="${x(samples.indexOf(s))}" y="194" text-anchor="middle">${esc(s.label)}</text>`).join('');
  const markers=annotations.slice(-2).map(a=>{const i=Math.min(samples.length-1,Math.max(0,a.index)),px=x(i),py=y(samples[i].rate),boxX=Math.min(right-145,Math.max(left,px-50));return `<g class="recovery-marker"><title>${esc(a.title)}</title><path d="M${boxX+65} 42 L${px} ${py}" stroke="var(--amber)" fill="none"/><rect x="${boxX}" y="8" width="145" height="34" rx="5" fill="#fff8e8" stroke="#deb975"/><text x="${boxX+8}" y="29" class="recovery-label">${esc(a.label)}</text><circle cx="${px}" cy="${py}" r="4" fill="var(--amber)"/></g>`;}).join('');
- return tr`<svg class="speed-svg" viewBox="0 0 ${width} 205" preserveAspectRatio="none" role="img" aria-label="Средняя скорость завершённых итераций. ${esc(annotations.map(a=>a.title).join('. '))}">${lines}<polyline points="${points}" fill="none" stroke="var(--blue)" stroke-width="2.4" stroke-linejoin="round"/>${samples.length===1?`<circle cx="${left}" cy="${y(samples[0].rate)}" r="4" fill="var(--blue)"/>`:''}${labels}${markers}</svg>`;
+ return tr`<svg class="speed-svg" viewBox="0 0 ${width} 205" preserveAspectRatio="none" role="img" aria-label="${generation?txt('Скорость генерации ответов модели'):txt('Средняя скорость завершённых итераций.')} ${esc(annotations.map(a=>a.title).join('. '))}">${lines}<polyline points="${points}" fill="none" stroke="var(--blue)" stroke-width="2.4" stroke-linejoin="round"/>${samples.length===1?`<circle cx="${left}" cy="${y(samples[0].rate)}" r="4" fill="var(--blue)"/>`:''}${labels}${markers}</svg>`;
 }

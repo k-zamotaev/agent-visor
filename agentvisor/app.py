@@ -29,6 +29,8 @@ class TaskEdit(BaseModel):
     goal: str | None = Field(default=None, min_length=3, max_length=20000)
     max_iterations: int | None = Field(default=None, ge=1, le=1000)
     timeout_seconds: int | None = Field(default=None, ge=5, le=21600)
+    idle_timeout_seconds: int | None = Field(default=None, ge=30, le=21600)
+    autonomous_recovery: bool | None = None
     max_hours: float | None = Field(default=None, ge=0.01, le=168)
 
 
@@ -41,6 +43,17 @@ class ModelDownload(BaseModel):
     @classmethod
     def trim_model(cls, value):
         return value.strip() if isinstance(value, str) else value
+
+
+class TaskContext(BaseModel):
+    text: str = Field(min_length=1, max_length=6000)
+
+    @field_validator('text')
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError('Поле не может состоять из пробелов')
+        return value.strip()
 
 
 def create_app(data_dir=None):
@@ -169,6 +182,7 @@ def create_app(data_dir=None):
     def task(task_id: str, request: Request):
         value = task_view(store.get(task_id), language(request))
         return dict(value, checklist=checklist(value), done=read_document(value, 'DONE.md'),
+                    metrics=[event_view(event, language(request)) for event in store.metrics(task_id)],
                     documents={name: read_document(value, name) for name in ('GOAL.md', 'PROGRESS.md')})
 
     @app.patch('/api/tasks/{task_id}')
@@ -186,6 +200,14 @@ def create_app(data_dir=None):
             store.event(task_id, 'task_updated', 'Настройки сохранены. Новая цель применяется со следующей итерации.',
                         data={'goal_version': result['goal_version']})
             return task_view(result, language(request))
+
+    @app.post('/api/tasks/{task_id}/context')
+    def add_context(task_id: str, body: TaskContext, request: Request):
+        with app.state.engine.lock:
+            current = store.get(task_id)
+            if current['status'] in {'succeeded', 'completed_unverified'}:
+                raise ValueError('Завершённая задача неизменна. Создайте новую задачу.')
+            return task_view(store.add_context(task_id, body.text), language(request))
 
     @app.post('/api/tasks/{task_id}/{action}')
     def control(task_id: str, action: str, request: Request):

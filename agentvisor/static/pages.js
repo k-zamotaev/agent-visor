@@ -85,19 +85,19 @@ function modelsPage(root){
 }
 function historyList(){
  const root=$('#history-list');if(!root)return;
- const search=$('#history-search').value.toLowerCase(),level=$('#history-level').value;
+ const search=$('#history-search').value.toLowerCase(),level=$('#history-level').value,kind=$('#history-kind').value;
  const events=context.state.events;
- const rows=events.filter(e=>(!level||level===e.level)&&(!search||`${e.message} ${e.kind}`.toLowerCase().includes(search)));
- const version=`${getLanguage()}:${rows.at(-1)?.id}:${rows.length}:${search}:${level}:${context.state.focusEvent}`;
+ const rows=events.filter(e=>(!level||level===e.level)&&(!kind||kind===e.kind)&&(!search||`${e.message} ${e.kind}`.toLowerCase().includes(search)));
+ const version=`${getLanguage()}:${rows.at(-1)?.id}:${rows.length}:${search}:${level}:${kind}:${context.state.focusEvent}`;
  if(root.dataset.version!==version&&!root.contains(document.activeElement)){
-  root.innerHTML=rows.length?eventRows(rows,true,context.state.focusEvent):markup('<div class="empty small">Нет событий по выбранному фильтру.</div>');
+  root.innerHTML=rows.length?eventRows(rows,true,context.state.focusEvent,kind==='reasoning'):markup('<div class="empty small">Нет событий по выбранному фильтру.</div>');
   root.dataset.version=version;
  }
  $('#history-task').textContent=context.state.task?.name||txt('Выберите задачу на странице обзора');
 }
 function historyPage(root){
- root.innerHTML=tr`<section class="panel"><div class="panel-heading"><div><h2 id="history-task"></h2><p class="prose">Последние 200 событий выбранной задачи. Полный журнал хранится в локальной базе.</p></div></div><div class="toolbar"><input id="history-search" type="search" aria-label="Поиск по событиям" placeholder="Поиск по событиям"><select id="history-level" aria-label="Уровень событий"><option value="">Все события</option><option value="info">Информация</option><option value="warning">Предупреждения</option><option value="error">Ошибки</option></select><button class="button" id="export-events">${icon('download')}Скачать JSON</button></div><div id="history-list" class="history-events"></div></section>`;
- $('#history-search').oninput=historyList;$('#history-level').onchange=historyList;
+ root.innerHTML=tr`<section class="panel"><div class="panel-heading"><div><h2 id="history-task"></h2><p class="prose">Последние 200 событий выбранной задачи. Полный журнал хранится в локальной базе.</p><p class="prose">Рассуждения видны, если модель передаёт их в ответе. Они не являются проверенным результатом работы.</p></div></div><div class="toolbar"><input id="history-search" type="search" aria-label="Поиск по событиям" placeholder="Поиск по событиям"><select id="history-kind" aria-label="Тип событий"><option value="">Весь ход работы</option><option value="reasoning">Рассуждения модели</option><option value="text">Ответы модели</option><option value="tool">Инструменты</option></select><select id="history-level" aria-label="Уровень событий"><option value="">Все события</option><option value="info">Информация</option><option value="warning">Предупреждения</option><option value="error">Ошибки</option></select><button class="button" id="export-events">${icon('download')}Скачать JSON</button></div><div id="history-list" class="history-events"></div></section>`;
+ $('#history-search').oninput=historyList;$('#history-level').onchange=historyList;$('#history-kind').onchange=historyList;
  $('#export-events').onclick=()=>{const blob=new Blob([JSON.stringify({task:context.state.task?.name,events:context.state.events},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='agentvisor-events.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),5000);};historyList();
  if(context.state.focusEvent!==undefined){const selected=document.getElementById('event-'+context.state.focusEvent);selected?.scrollIntoView({block:'center'});selected?.focus({preventScroll:true});}
 }
@@ -105,7 +105,7 @@ async function settingsPage(root){
  const m=context.state.system||{},p=context.state.profile;
  const row=(key,value)=>`<div><dt>${key}</dt><dd>${esc(value)}</dd></div>`;
  root.innerHTML=tr`<section id="network-settings" class="panel network-panel"></section><div class="settings-grid"><section class="panel"><h2>Этот узел</h2><dl class="definition">${row(txt('Платформа'),(m.os||'—')+(m.container?' · Docker':''))}${row(txt('Процессор'),m.cpu||'—')}${row(txt('Потоки CPU'),m.cpu_count||'—')}${row(txt('Оперативная память'),gigabytes(m.ram_total)+txt(' ГБ'))}${row(txt('Видеокарта'),m.gpus?.map(g=>g.name).join(', ')||txt('NVIDIA GPU не обнаружен'))}${row('OpenCode',m.opencode||txt('Не найден в PATH'))}${row('LM Studio CLI',m.lms||txt('Не найден'))}${row(txt('Данные'),context.state.dataDirectory||'.agentvisor-data')}</dl></section>
- <section class="panel"><h2>Как устроен запуск</h2><div class="prose model-help"><p>Одновременно работает одна задача. Каждая итерация — новая сессия OpenCode; цель, план и результаты остаются в каталоге проекта.</p><p>После перезапуска AgentVisor незаконченная задача остаётся на паузе. Продолжить её можно из обзора.</p><p>Смена цели применяется со следующей итерации. Пауза завершает текущее дерево процессов и сохраняет уже записанные файлы.</p><p>Рекомендации по памяти не гарантируют наилучшую скорость. Измерьте выбранный профиль перед длительным запуском.</p></div><hr class="section-divider"><h3>Подключение к модели</h3><p class="prose model-help">${esc(p.runtime==='ollama'?'Ollama':'LM Studio')} · ${esc(p.base_url)}</p><button class="button" data-page="models">Изменить профиль</button></section></div>`;
+ <section class="panel"><h2>Как устроен запуск</h2><div class="prose model-help"><p>Одновременно работает одна задача. Каждая итерация — новая сессия OpenCode; цель, план и результаты остаются в каталоге проекта.</p><p>Автономное восстановление продолжает работу после зависания и аварийного перезапуска. Ручная пауза и остановка сохраняются.</p><p>Смена цели применяется со следующей итерации. Пауза завершает текущее дерево процессов и сохраняет уже записанные файлы.</p><p>Рекомендации по памяти не гарантируют наилучшую скорость. Измерьте выбранный профиль перед длительным запуском.</p></div><hr class="section-divider"><h3>Подключение к модели</h3><p class="prose model-help">${esc(p.runtime==='ollama'?'Ollama':'LM Studio')} · ${esc(p.base_url)}</p><button class="button" data-page="models">Изменить профиль</button></section></div>`;
  await renderNetwork($('#network-settings'),context);
 }
 export async function renderPage(page,ctx){

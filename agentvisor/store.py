@@ -88,6 +88,38 @@ class Store:
                        (task_id, time.time(), level, kind, str(message)[:6000],
                         json.dumps(data, ensure_ascii=False)))
 
+    def add_context(self, task_id, text):
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT body FROM tasks WHERE id=?', (task_id,)).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            task = json.loads(row['body'])
+            additions = task.get('context_additions', [])
+            if len(additions) >= 40 or sum(len(item['text']) for item in additions) + len(text) > 20000:
+                raise ValueError('Дополнения превысили 20000 символов или 40 записей. Уточните основную цель.')
+            version = task.get('context_version', 0) + 1
+            additions.append({'version': version, 'text': text, 'created': time.time()})
+            task.update(context_additions=additions, context_version=version, updated=time.time())
+            db.execute('UPDATE tasks SET body=?, updated=? WHERE id=?',
+                       (json.dumps(task, ensure_ascii=False), task['updated'], task_id))
+        self.event(task_id, 'context_added', 'Дополнение сохранено и ожидает передачи модели', data={'version': version})
+        return task
+
+    def mark_context_delivered(self, task_id, version):
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT body FROM tasks WHERE id=?', (task_id,)).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            task = json.loads(row['body'])
+            if task.get('applied_context_version', 0) >= version:
+                return
+            task.update(applied_context_version=version, updated=time.time())
+            db.execute('UPDATE tasks SET body=?, updated=? WHERE id=?',
+                       (json.dumps(task, ensure_ascii=False), task['updated'], task_id))
+        self.event(task_id, 'context_delivered', 'Дополнение передано модели', data={'version': version})
+
     def events(self, task_id, after=0, limit=200):
         with self.connect() as db:
             if after:
@@ -96,6 +128,13 @@ class Store:
             else:
                 rows = db.execute('SELECT * FROM events WHERE task_id=? ORDER BY id DESC LIMIT ?',
                                   (task_id, limit)).fetchall()[::-1]
+        return [dict(row, data=json.loads(row['data'])) for row in rows]
+
+    def metrics(self, task_id):
+        with self.connect() as db:
+            rows = db.execute("SELECT * FROM events WHERE task_id=? AND kind IN "
+                              "('iteration_finished', 'generation_sample', 'recovering') "
+                              "ORDER BY id DESC LIMIT 400", (task_id,)).fetchall()[::-1]
         return [dict(row, data=json.loads(row['data'])) for row in rows]
 
     def setting(self, key, default=None):

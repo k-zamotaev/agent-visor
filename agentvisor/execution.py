@@ -11,7 +11,8 @@ from .processes import spawn, stop_tree
 from .i18n import translate
 
 
-def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None, health_interval=5):
+def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None, health_interval=5,
+            inference=None):
     started = time.monotonic()
     process = spawn(argv, cwd=task['workspace'], env=env)
     messages = queue.Queue(maxsize=1024)
@@ -20,8 +21,24 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
     output_tokens, failed, reason = 0, False, None
     error_detail = ''
     heartbeat = started
+    last_activity = started
+    last_event, last_tool = '', ''
+    # OpenCode JSON is not token streaming: a stalled tool can leave the last
+    # visible event at step_start while /models remains perfectly healthy.
+    idle_budget = task.get('idle_timeout_seconds', 300) if kind == 'agent' else None
     next_health_check, unhealthy = started, 0
     budget = min(task['timeout_seconds'], task['max_hours'] * 3600 - task.get('elapsed', 0))
+
+    def idle_problem():
+        activity = max(last_activity, inference.activity()) if inference else last_activity
+        silent = time.monotonic() - activity
+        if idle_budget is None or silent < idle_budget:
+            return None
+        message = f'Нет событий агента {int(silent)} с. Сессия будет перезапущена с диагностикой.'
+        store.event(task['id'], 'agent_idle', message, 'warning', data={
+            'idle_seconds': round(silent, 1), 'idle_timeout_seconds': idle_budget,
+            'last_event': last_event, 'last_tool': last_tool})
+        return message
 
     def check_runtime():
         nonlocal next_health_check, unhealthy
@@ -50,7 +67,7 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
                 line = stream.readline(65536)
                 if not line:
                     break
-                while not cancel.is_set():
+                while not cancel.is_set() and not readers_stop.is_set():
                     try:
                         messages.put((channel, line), timeout=0.2)
                         break
@@ -63,9 +80,10 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
                     messages.put((channel, None), timeout=0.2)
                     break
                 except queue.Full:
-                    if cancel.is_set():
+                    if cancel.is_set() or readers_stop.is_set():
                         break
 
+    readers_stop = threading.Event()
     readers = [threading.Thread(target=read, args=(process.stdout, 'stdout'), daemon=True),
                threading.Thread(target=read, args=(process.stderr, 'stderr'), daemon=True)]
     for thread in readers:
@@ -82,6 +100,10 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
             if duration >= budget:
                 reason, failed = 'timeout', True
                 store.event(task['id'], 'timeout', 'Превышено время итерации или запуска', 'warning')
+                break
+            problem = idle_problem()
+            if problem:
+                reason, failed, error_detail = 'idle_timeout', True, problem
                 break
             problem = check_runtime()
             if problem:
@@ -106,6 +128,12 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
             if isinstance(event, dict):
                 part = event.get('part') or {}
                 event_type = event.get('type', 'output')
+                last_event = event_type
+                if (event_type in {'step_finish', 'tool_use', 'tool_result'} or
+                        event_type in {'text', 'reasoning'} and part.get('text')):
+                    last_activity = time.monotonic()
+                # Health probes, stderr chatter and repeated step_start events
+                # are not evidence of agent work and cannot extend this deadline.
                 if event_type == 'step_finish':
                     tokens = part.get('tokens') or {}
                     output_tokens += int(tokens.get('output') or 0)
@@ -120,9 +148,11 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
                 elif event_type in {'tool_use', 'tool_result'}:
                     state = part.get('state') or {}
                     message = state.get('title') or part.get('tool') or translate('Инструмент', task.get('language', 'ru'))
+                    last_tool = str(message)[:1000]
                     store.event(task['id'], 'tool', message, data={'status': state.get('status')})
                 elif event_type in {'text', 'reasoning'}:
-                    store.event(task['id'], event_type, part.get('text', '')[:6000])
+                    if event_type != 'reasoning' or not inference or not inference.reasoning_seen:
+                        store.event(task['id'], event_type, part.get('text', '')[:6000])
                 else:
                     store.event(task['id'], 'agent_event', event_type)
             else:
@@ -137,17 +167,23 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
                 if time.monotonic() - started >= budget:
                     reason, failed = 'timeout', True
                     break
+                problem = idle_problem()
+                if problem:
+                    reason, failed, error_detail = 'idle_timeout', True, problem
+                    break
                 problem = check_runtime()
                 if problem:
                     reason, failed, error_detail = 'runtime_unavailable', True, problem
                     break
     finally:
+        readers_stop.set()
         stop_tree(process)
         for thread in readers:
             thread.join(timeout=1)
         store.update(task['id'], pid=None, pid_created=None)
     return {'exit_code': process.returncode, 'failed': failed or (reason is None and process.returncode != 0),
-            'reason': reason, 'error_detail': error_detail, 'duration': time.monotonic() - started, 'output_tokens': output_tokens}
+            'reason': reason, 'error_detail': error_detail, 'duration': time.monotonic() - started,
+            'output_tokens': output_tokens, 'last_event': last_event, 'last_tool': last_tool}
 
 
 def agent_environment(task):

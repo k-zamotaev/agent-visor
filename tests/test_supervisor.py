@@ -23,7 +23,8 @@ def make(tmp_path, scenario='complete', **overrides):
     workspace.mkdir(exist_ok=True)
     store = Store(tmp_path / 'data')
     values = NewTask(name='Test', workspace=str(workspace), goal='Complete a test',
-                     profile=Profile(model='fake'), backoff_seconds=0.1).model_dump()
+                     profile=Profile(model='fake'), backoff_seconds=0.1,
+                     autonomous_recovery=False).model_dump()
     values.update(overrides)
     task = store.create(values)
     engine = Supervisor(store, Runtime(), lambda t: [sys.executable,

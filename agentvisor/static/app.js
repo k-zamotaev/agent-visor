@@ -6,6 +6,7 @@ const state={token:'',profile:{},tasks:[],task:null,events:[],system:null,modelI
 captureStatic();
 $('#language-picker').value=getLanguage();
 let pollCount=0;
+$('#chart-metric').value=localStorage.getItem('agentvisor-chart-metric')==='generation'?'generation':'session';
 
 async function api(path,options={}) {
  const response=await fetch('/api'+path,{...options,headers:{'Content-Type':'application/json','X-AgentVisor-Token':state.token,'Accept-Language':getLanguage(),...options.headers}});
@@ -27,19 +28,28 @@ function renderOverview(){
  setText('#progress-caption',items.length?txt('Отмечено агентом в плане'):txt('План появится после запуска'));
  setText('#metric-time',t?duration(t.elapsed):'—');
  setText('#time-caption',t?tr`Итерация ${String(t.iteration).padStart(2,'0')} из ${t.max_iterations}`:txt('Ожидание первой задачи'));
- const completed=events.filter(e=>e.kind==='iteration_finished'&&e.data?.duration>0);
+ const metricEvents=t?.metrics||events;
+ const completed=metricEvents.filter(e=>e.kind==='iteration_finished'&&e.data?.duration>0);
  const tokens=t?.output_tokens||0,seconds=t?.agent_seconds||0;
  setText('#metric-speed',tokens&&seconds?tr`${number(tokens/seconds)} ток/с`:'—');
  setText('#speed-caption',t?.mode==='demo'?txt('Симуляция · модель не используется'):txt('С учётом инструментов и ожидания'));
+ const generation=t?.generation_sample;
+ const generating=t?.status==='running'&&t?.generation_activity?.active&&Date.now()/1000-t.generation_activity.time<5;
+ setText('#metric-generation',generation?tr`${number(generation.tokens_per_second)} ток/с`:'—');
+ setText('#generation-caption',generation?tr`Последний ответ · ${time(generation.time)}`:txt('Ожидание ответа модели'));
+ if(generating)setText('#generation-caption',generation?txt('Идёт генерация · показан последний ответ'):txt('Идёт генерация · замер после ответа'));
  setText('#metric-recovery',t?number(t.recoveries):'—');
  setText('#recovery-caption',t?.recoveries?txt('Повторные попытки продолжения'):txt('История повторных запусков'));
  setText('#plan-label',items.length?tr`${done} из ${items.length} отмечено`:txt('Пока нет шагов'));
  $('#plan-progress').value=items.length?done/items.length*100:0;
  const current=items.findIndex(x=>!x.done);
  $('#checklist').innerHTML=items.length?`<ul>${items.map((s,i)=>`<li class="step ${s.done?'done':i===current?'active':''}"><span class="step-icon">${s.done?icon('check'):''}</span><span class="step-number">${String(i+1).padStart(2,'0')}</span><span class="step-text">${esc(s.text)}</span>${i===current&&active.has(t.status)?markup('<span class="badge">В работе</span>'):''}</li>`).join('')}</ul>`:`<div class="empty">${icon('list')}<strong>${t?txt('Агент готовит план'):txt('Начните с небольшой цели')}</strong><span>${t?txt('Чек-лист из PROGRESS.md появится здесь после первого шага.'):txt('Выберите проект и опишите результат. AgentVisor сохранит контекст между сессиями.')}</span>${t?'':markup('<button class="button primary" data-page="tasks">Создать задачу</button><button class="text-button" id="quick-demo">Посмотреть демонстрацию</button>')}</div>`;
- const samples=completed.filter(e=>e.data.output_tokens>0).map(e=>({time:e.time,label:`№${e.data.iteration}`,rate:e.data.output_tokens/e.data.duration}));
- const recoveries=events.filter(e=>e.kind==='recovering').map(e=>{const next=samples.findIndex(s=>s.time>=e.time);return {index:next<0?samples.length-1:next,label:txt('Повтор · ')+time(e.time).slice(0,5),title:e.message};});
- $('#speed-chart').innerHTML=chart(samples,recoveries,$('#speed-chart').clientWidth);
+ const generationChart=$('#chart-metric').value==='generation';
+ const samples=generationChart?metricEvents.filter(e=>e.kind==='generation_sample'&&e.data.tokens_per_second>0).map(e=>({time:e.time,label:time(e.time),rate:e.data.tokens_per_second})):
+  completed.filter(e=>e.data.output_tokens>0).map(e=>({time:e.time,label:`№${e.data.iteration}`,rate:e.data.output_tokens/e.data.duration}));
+ const recoveries=metricEvents.filter(e=>e.kind==='recovering').map(e=>{const next=samples.findIndex(s=>s.time>=e.time);return {index:next<0?samples.length-1:next,label:txt('Повтор · ')+time(e.time).slice(0,5),title:e.message};});
+ $('#speed-chart').innerHTML=chart(samples,recoveries,$('#speed-chart').clientWidth,generationChart);
+ setText('#chart-note',generationChart?txt('Скорость ответа по потоку токенов · без ожидания первого токена и работы инструментов'):txt('Выходные токены / длительность завершённой итерации'));
  const recent=$('#recent-events'),eventKey=getLanguage()+events.slice(-4).map(e=>e.id+':'+e.message).join('|');
  if(recent.dataset.events!==eventKey&&!recent.contains(document.activeElement)){recent.innerHTML=eventRows(events.slice(-4));recent.dataset.events=eventKey;}
  const p=t?.resolved_profile || t?.profile || state.profile;
@@ -57,7 +67,7 @@ function renderOverview(){
   healthNode.hidden=demoRun||!t;
   healthNode.className='runtime-health '+(watched&&!health.ok?'warning':'');
   healthNode.textContent=p.watchdog===false?txt('Наблюдение за моделью выключено'):watched?
-   (health.ok?tr`Модель отвечает · проверено ${time(health.checked_at)}`:txt(health.message)):
+   (health.ok?tr`API модели доступен · проверено ${time(health.checked_at)}`:txt(health.message)):
    active.has(t?.status)?txt('Наблюдение включится после подготовки модели'):txt('Наблюдение приостановлено вместе с задачей');
  }
  if(machine){
@@ -69,6 +79,13 @@ function renderOverview(){
   setText('#ram-value',tr`${gigabytes(machine.ram_used)} / ${gigabytes(machine.ram_total)} ГБ`);
  }
  $('#edit-goal').disabled=!t||['succeeded','completed_unverified'].includes(t.status);
+ const contextPanel=$('#context-panel');contextPanel.hidden=!t;
+ const contextButton=$('#context-form button');
+ contextButton.disabled=!!contextButton.dataset.saving||!t||['succeeded','completed_unverified'].includes(t.status);
+ const contextVersion=t?.context_version||0,delivered=t?.applied_context_version||0;
+ setText('#context-delivery',contextVersion?(contextVersion>delivered?tr`Дополнение №${contextVersion} ожидает передачи`:tr`Дополнение №${contextVersion} передано модели`):'');
+ const notes=$('#context-notes'),notesKey=(t?.id||'')+':'+contextVersion;
+ if(notes.dataset.version!==notesKey){notes.innerHTML=(t?.context_additions||[]).slice(-3).map(n=>`<p><strong>№${n.version}</strong> ${esc(n.text)}</p>`).join('');notes.dataset.version=notesKey;}
  $('#stop-control').hidden=!t;
  $('#stop-control').disabled=!t||!active.has(t.status);
  const primary=$('#primary-control');
@@ -137,6 +154,13 @@ document.addEventListener('click',event=>{
  if(event.target.closest('#quick-demo'))startDemo();
 });
 $('#task-picker').addEventListener('change',e=>selectTask(e.target.value));
+$('#chart-metric').addEventListener('change',e=>{localStorage.setItem('agentvisor-chart-metric',e.target.value);renderOverview();});
+$('#context-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(!state.task)return;
+ const button=event.submitter,taskId=state.task.id,text=$('#context-text').value;button.dataset.saving='true';button.disabled=true;
+ try{await api(`/tasks/${taskId}/context`,{method:'POST',body:JSON.stringify({text})});if($('#context-text').value===text)$('#context-text').value='';toast(txt('Дополнение сохранено и ожидает передачи модели'));await refresh();}
+ catch(error){toast(error.message,true);}finally{delete button.dataset.saving;renderOverview();}
+});
 $('#language-picker').addEventListener('change',async event=>{
  const picker=event.target,page=state.page;
  const values=[...document.querySelectorAll('.page input,.page textarea,.page select')].map(el=>({id:el.id,value:el.value,checked:el.checked}));

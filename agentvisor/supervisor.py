@@ -4,11 +4,14 @@ import re
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from urllib.parse import urlparse
 
 from .execution import agent_environment, execute
+from .inference import InferenceGateway
 from .processes import executable, recover_process
+from .recovery import initialize_progress, observe_progress, record_recovery
 from .store import ACTIVE
 from .tasks import checklist, prepare_documents, read_document, state_dir
 
@@ -21,12 +24,29 @@ class Supervisor:
         self.current = None
         self.cancel = threading.Event()
         self.requested = 'paused'
+        resume = None
         for task in store.list():
             if task['status'] in ACTIVE:
                 recover_process(task)
-                store.update(task['id'], status='paused', pid=None, pid_created=None,
-                             reason='Приложение перезапущено. Проверьте последний шаг перед продолжением.')
-                store.event(task['id'], 'service_restarted', 'Прерванный запуск переведён в паузу', 'warning')
+                interrupted = task['status'] not in {'pausing', 'stopping'}
+                status = 'stopped' if task['status'] == 'stopping' else 'paused'
+                task = store.update(task['id'], status=status, pid=None, pid_created=None,
+                                    reason='Приложение перезапущено. Проверьте последний шаг перед продолжением.')
+                if interrupted and task.get('autonomous_recovery', True) and resume is None:
+                    task = initialize_progress(store, task)
+                    record_recovery(store, task, {'reason': 'service_interrupted'},
+                                    'Приложение прервано во время работы. Проверьте результат последней операции.', repair=True)
+                    store.update(task['id'], recoveries=task['recoveries'] + 1)
+                    resume = task['id']
+                    store.event(task['id'], 'service_restarted',
+                                'Приложение перезапущено. Прерванная задача продолжится автоматически.', 'warning')
+                else:
+                    store.event(task['id'], 'service_restarted', 'Прерванный запуск переведён в паузу', 'warning')
+        if resume:
+            try:
+                self.start(resume)
+            except ValueError as error:
+                self.transition(resume, 'blocked', str(error), 'error')
 
     @property
     def busy(self):
@@ -84,6 +104,7 @@ class Supervisor:
         if task['mode'] == 'demo':
             return [sys.executable, str(Path(__file__).with_name('demo_agent.py')), str(state_dir(task))]
         argv = [executable('opencode'), 'run', '--format', 'json', '--dir', task['workspace'],
+                '--thinking',
                 '--title', f'AgentVisor {task["id"]} / {task["iteration"]}',
                 '--model', 'agentvisor/' + ready['instance']]
         if task['auto_permissions']:
@@ -95,11 +116,11 @@ class Supervisor:
         if os.name == 'nt':
             ctypes.windll.kernel32.SetThreadExecutionState(0x80000001)
         base_elapsed = self.store.get(task_id)['elapsed']
-        failures = stalls = 0
-        signature = tuple(item['text'] for item in checklist(self.store.get(task_id)) if item['done'])
+        failures = 0
         try:
             while not self.cancel.is_set():
-                task = self.store.get(task_id)
+                task = initialize_progress(self.store, self.store.get(task_id))
+                failures = task.get('failure_streak', 0)
                 if task['iteration'] >= task['max_iterations']:
                     self.transition(task_id, 'blocked', 'Достигнут лимит итераций', 'warning')
                     break
@@ -134,17 +155,22 @@ class Supervisor:
                     self.store.update(task_id, resolved_profile=profile, runtime_instance=ready['instance'])
                     # Read goal again after loading: it may have changed in the UI.
                     task = self.store.get(task_id)
-                    prompt = prepare_documents(task, ready)
-                    task = self.store.update(task_id, iteration=task['iteration'] + 1,
-                                             applied_goal_version=task['goal_version'],
-                                             elapsed=base_elapsed + time.monotonic() - started)
-                    if self.cancel.is_set():
-                        break
-                    self.transition(task_id, 'running', f'Итерация {task["iteration"]}: следующий шаг')
-                    health_check = (lambda: self.runtime.health(profile, ready['instance'])) if (
-                        task['mode'] != 'demo' and profile.get('watchdog', True) and hasattr(self.runtime, 'health')) else None
-                    result = execute(self.store, task, self.command(task, prompt, ready), self.cancel,
-                                     agent_environment(task), health_check=health_check)
+                    gateway = (InferenceGateway(self.store, task, profile, self.cancel)
+                               if task['mode'] == 'opencode' and not self.command_builder else nullcontext())
+                    with gateway as inference:
+                        if inference:
+                            ready = dict(ready, api_base_url=inference.base_url)
+                        prompt = prepare_documents(task, ready)
+                        task = self.store.update(task_id, iteration=task['iteration'] + 1,
+                                                 applied_goal_version=task['goal_version'],
+                                                 elapsed=base_elapsed + time.monotonic() - started)
+                        if self.cancel.is_set():
+                            break
+                        self.transition(task_id, 'running', f'Итерация {task["iteration"]}: следующий шаг')
+                        health_check = (lambda: self.runtime.health(profile, ready['instance'])) if (
+                            task['mode'] != 'demo' and profile.get('watchdog', True) and hasattr(self.runtime, 'health')) else None
+                        result = execute(self.store, task, self.command(task, prompt, ready), self.cancel,
+                                         agent_environment(task), health_check=health_check, inference=inference)
                     task = self.store.update(task_id, elapsed=base_elapsed + time.monotonic() - started,
                                              output_tokens=task['output_tokens'] + result['output_tokens'],
                                              agent_seconds=task.get('agent_seconds', 0) + result['duration'])
@@ -152,17 +178,23 @@ class Supervisor:
                                      data=dict(result, iteration=task['iteration']))
                     if self.cancel.is_set():
                         break
+                    task = observe_progress(self.store, task)
                     if result['failed']:
                         raise RuntimeError(f'Ошибка итерации: {result.get("error_detail") or result["reason"] or "exit " + str(result["exit_code"])}')
                     if self.complete(task):
                         break
                     failures = 0
-                    new_signature = tuple(item['text'] for item in checklist(task) if item['done'])
-                    stalls = stalls + 1 if signature == new_signature else 0
-                    signature = new_signature
+                    task = self.store.update(task_id, failure_streak=0)
+                    stalls = task['progress_watch']['stalls']
+                    if stalls:
+                        task = record_recovery(self.store, task, result, repair=stalls >= task['stall_limit'])
                     if stalls >= task['stall_limit']:
-                        self.transition(task_id, 'blocked', 'Нет новых завершённых шагов. Проверьте план и журнал.', 'warning')
-                        break
+                        if not task.get('autonomous_recovery', True):
+                            self.transition(task_id, 'blocked', 'Нет новых завершённых шагов. Проверьте план и журнал.', 'warning')
+                            break
+                        self.store.update(task_id, recoveries=task['recoveries'] + 1)
+                        self.transition(task_id, 'recovering',
+                                        'Нет новых завершённых шагов. Следующая сессия устранит блокировщик.', 'warning')
                     self.store.event(task_id, 'next_iteration', 'Контекст сохранён; подготовка следующей сессии')
                     self.cancel.wait(task['backoff_seconds'])
                 except InterruptedError:
@@ -171,8 +203,18 @@ class Supervisor:
                     if self.cancel.is_set():
                         break
                     failures += 1
-                    task = self.store.get(task_id)
+                    task = self.store.update(task_id, failure_streak=failures)
                     message = str(error)[:2500]
+                    stalled = task.get('progress_watch', {}).get('stalls', 0) >= task['stall_limit']
+                    repair = stalled or failures >= task['max_failures']
+                    task = record_recovery(self.store, task, result, message, repair=repair)
+                    if not task.get('autonomous_recovery', True):
+                        if stalled:
+                            self.transition(task_id, 'blocked', 'Нет новых завершённых шагов. Проверьте план и журнал.', 'warning')
+                            break
+                        if failures >= task['max_failures']:
+                            self.transition(task_id, 'blocked', 'Исчерпаны попытки: ' + message, 'error')
+                            break
                     profile = (task.get('resolved_profile') or task['profile']).copy()
                     if result and result['failed'] and (profile['runtime'] == 'ollama' or
                             urlparse(profile['base_url']).hostname in {'localhost', '127.0.0.1', '::1'}):
@@ -197,12 +239,11 @@ class Supervisor:
                             profile['output_limit'] = min(profile['output_limit'], profile['context'] // 4)
                             self.store.update(task_id, resolved_profile=profile)
                             self.store.event(task_id, 'context_reduced', f'Контекст снижен до {profile["context"]} после ошибки памяти', 'warning')
-                    if failures >= task['max_failures']:
-                        self.transition(task_id, 'blocked', 'Исчерпаны попытки: ' + message, 'error')
-                        break
                     self.store.update(task_id, recoveries=task['recoveries'] + 1)
-                    self.transition(task_id, 'recovering', f'Повтор {failures}/{task["max_failures"]}: {message}', 'warning')
-                    self.cancel.wait(min(task['backoff_seconds'] * (2 ** (failures - 1)), 300))
+                    reason = (f'Автовосстановление: попытка {failures}. {message}' if repair else
+                              f'Повтор {failures}/{task["max_failures"]}: {message}')
+                    self.transition(task_id, 'recovering', reason, 'warning')
+                    self.cancel.wait(min(task['backoff_seconds'] * (2 ** min(failures - 1, 12)), 300))
         except Exception as error:
             self.transition(task_id, 'failed', str(error)[:2500], 'error')
         finally:
@@ -213,6 +254,8 @@ class Supervisor:
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
 
     def complete(self, task):
+        if task.get('context_version', 0) > task.get('applied_context_version', 0):
+            return False
         done = read_document(task, 'DONE.md')
         declared = re.search(r'^goal_version:\s*(\d+)\s*$', done, re.M)
         if not declared or int(declared[1]) != task['goal_version'] or task['applied_goal_version'] != task['goal_version']:
@@ -223,7 +266,9 @@ class Supervisor:
             return False
         if not task['verification']:
             with self.lock:
-                if self.cancel.is_set() or self.store.get(task['id'])['goal_version'] != task['goal_version']:
+                latest = self.store.get(task['id'])
+                if (self.cancel.is_set() or latest['goal_version'] != task['goal_version'] or
+                        latest.get('context_version', 0) > latest.get('applied_context_version', 0)):
                     return False
                 self.transition(task['id'], 'completed_unverified', 'Агент заявил о завершении. Независимая проверка не настроена.')
                 return True
@@ -231,7 +276,8 @@ class Supervisor:
         result = execute(self.store, task, task['verification'], self.cancel, kind='verify')
         with self.lock:
             latest = self.store.get(task['id'])
-            if self.cancel.is_set() or latest['goal_version'] != task['goal_version']:
+            if (self.cancel.is_set() or latest['goal_version'] != task['goal_version'] or
+                    latest.get('context_version', 0) > latest.get('applied_context_version', 0)):
                 return False
             self.store.event(task['id'], 'verification_finished', 'Результат независимой проверки', data=result)
             if result['failed']:
