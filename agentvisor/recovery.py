@@ -103,6 +103,7 @@ def record_recovery(store, task, result=None, error='', repair=False, layer=None
     entry['repeated_failure_count'] = 1 + max((item.get('repeated_failure_count', 1)
                                              for item in matching), default=0)
     step = next((item['text'][:1500] for item in checklist(task) if not item['done']), '')
+    entry['step_index'] = next((index for index, item in enumerate(checklist(task)) if not item['done']), -1)
     cause = detect_loop(entry, history, step)
     if cause:
         entry['failure_cause'] = cause

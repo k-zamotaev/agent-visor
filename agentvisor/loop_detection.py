@@ -16,6 +16,7 @@ def failure_cause(entry, step):
     patterns = (
         ('missing_dependency', r"(?:No module named|Cannot find (?:module|package))\s+['\"]([^'\"]+)"),
         ('missing_command', r"(?:The term|command not found:)\s*['\"]?([^'\"\s]+)"),
+        ('missing_command', r"(?:^|\s)([^\s:]+): command not found\b"),
         ('port_in_use', r'(?:EADDRINUSE|address already in use)[^\n]*?([\w.\[\]:-]+:\d{2,5})\b'),
         ('connection_refused', r'(?:ECONNREFUSED|connection refused)[^\n]*?([\w.\[\]:-]+:\d{2,5})\b'),
     )
@@ -23,7 +24,7 @@ def failure_cause(entry, step):
     for kind, pattern in patterns:
         match = re.search(pattern, evidence, re.I)
         if match:
-            category, detail = kind, match[1].lower()
+            category, detail = kind, match[1]
             break
     if not category:
         # Preserve actual test names, paths and numbers. Only volatile timestamp
@@ -38,7 +39,7 @@ def failure_cause(entry, step):
         return None
     arguments = tools[0].get('input') if tools else {}
     cwd = arguments.get('cwd', '') if isinstance(arguments, dict) else ''
-    scope = [entry.get('failure_layer'), step, cwd, category, detail]
+    scope = [entry.get('failure_layer'), entry.get('step_index', step), cwd, category, detail]
     return {'key': hashlib.sha256(json.dumps(scope, ensure_ascii=False).encode()).hexdigest()[:20],
             'category': category, 'detail': detail, 'step': step[:1500]}
 

@@ -77,3 +77,19 @@ def test_cwd_is_part_of_scope_and_same_iteration_is_not_counted_twice(tmp_path):
     result['tool_failures'][0]['input']['cwd'] = '/project/other'
     task = record_recovery(store, store.update(task['id'], iteration=1), result)
     assert task['recovery_context']['failure_cause']['attempts'] == 1
+
+
+def test_step_annotations_cannot_reset_loop_counter(tmp_path):
+    store, _, task = make(tmp_path)
+    for iteration in range(1, 4):
+        write_document(task, 'PROGRESS.md', f'- [ ] Start backend (attempt {iteration})\n')
+        task = record_recovery(store, store.update(task['id'], iteration=iteration), failure(str(iteration)))
+    assert task['recovery_context']['failure_cause']['attempts'] == 3
+
+
+def test_bash_missing_command_and_case_sensitive_paths():
+    from agentvisor.loop_detection import failure_cause
+    def cause(output):
+        return failure_cause({'tool_failures': [{'output': output}]}, 'step')
+    assert cause('/bin/bash: line 1: pnpm: command not found')['detail'] == 'pnpm'
+    assert cause("Cannot find module './Foo'")['key'] != cause("Cannot find module './foo'")['key']
