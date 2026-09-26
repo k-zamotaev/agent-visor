@@ -18,6 +18,7 @@ from .store import ACTIVE
 from .task_memory import initialize_memory, remember_iteration
 from .tool_trace import fingerprint
 from .step_acceptance import mark_steps, observed_evidence, pending_steps, validate_review
+from .session_roles import session_role
 from .tasks import checklist, prepare_documents, read_document, state_dir, write_document
 
 
@@ -183,13 +184,16 @@ class Supervisor:
                             ready = dict(ready, api_base_url=inference.base_url)
                             if task['command_policy']['allowed']:
                                 ready['command_mcp_url'] = inference.mcp_url
+                        role = session_role(task)
                         prompt = prepare_documents(task, ready)
                         task = self.store.update(task_id, iteration=task['iteration'] + 1,
+                                                 active_role=role, last_session_role=role,
                                                  applied_goal_version=task['goal_version'],
                                                  elapsed=base_elapsed + time.monotonic() - started)
                         if self.cancel.is_set():
                             break
                         self.transition(task_id, 'running', f'Итерация {task["iteration"]}: следующий шаг')
+                        self.store.event(task_id, 'session_role', 'Роль текущей сессии', data=role)
                         health_check = (lambda: self.runtime.health(profile, ready['instance'])) if (
                             task['mode'] != 'demo' and profile.get('watchdog', True) and hasattr(self.runtime, 'health')) else None
                         result = execute(self.store, task, self.command(task, prompt, ready), self.cancel,
@@ -202,6 +206,8 @@ class Supervisor:
                     task = remember_iteration(self.store, task, result)
                     if self.cancel.is_set():
                         break
+                    if role['name'] == 'diagnostician':
+                        mark_steps(task, pending_steps(task), False)
                     if result['failed']:
                         if task.get('step_acceptance', True) and task['mode'] != 'demo':
                             mark_steps(task, pending_steps(task), False)
@@ -211,7 +217,7 @@ class Supervisor:
                         self.review_steps(task, ready, profile)
                         task = self.store.get(task_id)
                     task = observe_progress(self.store, task)
-                    if self.complete(task):
+                    if role['name'] == 'executor' and self.complete(task):
                         break
                     failures = 0
                     task = self.store.update(task_id, failure_streak=0)
@@ -345,6 +351,9 @@ class Supervisor:
                 raise VerificationFailure({'failed': True, 'error_detail': 'Plan changed before milestone review'})
             write_document(task, 'STEP_REVIEW.json', '')
         self.transition(task['id'], 'verifying', 'Независимая приёмка этапа')
+        role = session_role(task, review=True)
+        self.store.update(task['id'], active_role=role)
+        self.store.event(task['id'], 'session_role', 'Роль текущей сессии', data=role)
         self.store.event(task['id'], 'step_review_started', 'Проверка отмеченных этапов',
                          data={'review_id': review['id'], 'steps': steps})
         with self.store.connect() as db:

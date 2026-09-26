@@ -37,7 +37,7 @@ def test_real_agent_events_extend_idle_deadline(tmp_path):
 
 
 def test_idle_recovery_supplies_diagnosis_and_kills_previous_tree(tmp_path):
-    store, engine, task = make(tmp_path, idle_timeout_seconds=0.5, max_failures=2)
+    store, engine, task = make(tmp_path, idle_timeout_seconds=1.0, max_failures=2)
     prompts, children = [], []
 
     class HealthyRuntime(Runtime):
@@ -109,8 +109,10 @@ def test_autonomous_repair_continues_beyond_local_retry_limits(tmp_path, scenari
     finish(engine)
     result = store.get(task['id'])
     assert result['status'] == 'completed_unverified'
-    assert result['iteration'] == 3
+    assert result['iteration'] == 4
     assert 'REPAIR SESSION' in prompts[2]
+    assert 'SESSION ROLE: diagnostician' in prompts[2]
+    assert 'SESSION ROLE: executor' in prompts[3]
     assert '"attempts": 2' in prompts[2]
     assert result['progress_watch']['stalls'] == 0
     assert result['recovery_context'] is None
@@ -150,7 +152,7 @@ def test_crashed_autonomous_task_resumes_with_repair_context(tmp_path):
     resumed = Supervisor(store, Runtime(), command)
     finish(resumed)
     result = store.get(task['id'])
-    assert result['status'] == 'completed_unverified' and result['iteration'] == 2
+    assert result['status'] == 'completed_unverified' and result['iteration'] == 3
     assert seen[0]['reason'] == 'service_interrupted' and seen[0]['repair']
     assert result['recoveries'] == 1
 

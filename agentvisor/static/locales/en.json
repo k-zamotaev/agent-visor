@@ -541,6 +541,7 @@
   "Этап не прошёл приёмку": "Milestone acceptance failed",
   "Этап подтверждён проверкой": "Milestone verified",
   "Этапы прошли приёмку. Итоговая проверка всей задачи не настроена.": "Milestones passed review. No final whole-task check is configured.",
+  "Роль текущей сессии": "Current session role",
   "Весь ход работы": "All activity",
   "Ответы модели": "Model responses",
   "Инструменты": "Tools",
