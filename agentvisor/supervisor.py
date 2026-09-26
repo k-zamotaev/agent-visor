@@ -19,6 +19,7 @@ from .task_memory import initialize_memory, remember_iteration
 from .tool_trace import fingerprint
 from .step_acceptance import (accepted_steps, claimed_steps, mark_steps, observed_evidence,
                               pending_steps, restore_accepted_claims, validate_review)
+from .review_finalization import budgets as review_budgets, finalize as finalize_review
 from .session_roles import session_role
 from .checkpoint_flow import checkpoint_after_acceptance, prepare_checkpoint
 from .skill_library import record_skills, skill_prompt
@@ -418,8 +419,10 @@ class Supervisor:
                          data={'review_id': review['id'], 'steps': steps})
         with self.store.connect() as db:
             cursor = db.execute('SELECT MAX(id) FROM events WHERE task_id=?', (task['id'],)).fetchone()[0]
+        inspection_budget, review_budget = review_budgets(task)
         task = dict(task, review_phase=True, review_request=review, review_cursor=cursor,
-                    active_effort=effort, timeout_seconds=min(task['timeout_seconds'], 300))
+                    active_effort=effort, review_began=began,
+                    review_inspection_seconds=inspection_budget, timeout_seconds=review_budget)
         if task['mode'] == 'opencode' and not self.command_builder:
             task['command_policy'] = resolve_command_policy(task, self.cancel)
         gateway = (InferenceGateway(self.store, task, profile, self.cancel)
@@ -433,8 +436,13 @@ class Supervisor:
             health_check = (lambda: self.runtime.health(profile, ready['instance'])) if (
                 profile.get('watchdog', True) and hasattr(self.runtime, 'health')) else None
             task = dict(task, elapsed=base_elapsed + time.monotonic() - began)
-            result = execute(self.store, task, self.command(task, prompt, ready), self.cancel,
+            inspection = dict(task, timeout_seconds=max(0, inspection_budget - (time.monotonic() - began)),
+                              review_handoff=bool(inference))
+            result = execute(self.store, inspection, self.command(task, prompt, ready), self.cancel,
                              agent_environment(task), inference=inference, health_check=health_check)
+            if inference:
+                result = finalize_review(self.store, dict(task, elapsed=base_elapsed), inference,
+                                         ready['instance'], self.cancel, result, began + review_budget)
         latest = self.store.get(task['id'])
         self.store.update(task['id'], output_tokens=latest['output_tokens'] + result['output_tokens'],
                           agent_seconds=latest.get('agent_seconds', 0) + result['duration'],

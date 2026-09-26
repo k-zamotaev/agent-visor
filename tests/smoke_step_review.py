@@ -1,5 +1,6 @@
 """Opt-in real OpenCode milestone review through MCP; no real model or user tasks."""
 import json
+import sys
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,7 +20,7 @@ class Runtime:
 
 
 class ReviewScenario:
-    def __init__(self, store, task):
+    def __init__(self, store, task, finalize=False):
         self.store, self.task = store, task
         self.requests, self.errors, self.tool_results = [], [], []
         self.names = {}
@@ -28,6 +29,7 @@ class ReviewScenario:
         self.command = python_command('verify_artifact.py')
         self.process_id = None
         self.report = None
+        self.finalize = finalize
 
     def call(self, tool, arguments):
         self.expected = f'call_review_{len(self.requests)}'
@@ -41,6 +43,16 @@ class ReviewScenario:
         names = [tool['function']['name'] for tool in body.get('tools', [])]
         if not names:
             return {'role': 'assistant', 'content': 'Independent review wire check'}, 'stop'
+        if self.phase == 'finalize':
+            assert len(names) == 1 and names[0].endswith('_submit_review')
+            assert body['tool_choice'] == 'required'
+            packet = json.loads(body['messages'][-1]['content'])
+            proof = next(item for item in packet['observations']
+                         if item['valid_evidence'] and 'ARTIFACT_VERIFIED' in item['output'])
+            self.names['submit_review'] = names[0]
+            self.phase = 'done'
+            return self.call('submit_review', {'passed': True, 'summary': 'Existing check passed',
+                'evidence': [{'event_id': proof['event_id'], 'finding': 'ARTIFACT_VERIFIED, exit 0'}]})
         for suffix in ('exec', 'wait_any', 'review_evidence', 'submit_review'):
             self.names[suffix] = next((name for name in names if name.endswith('_' + suffix)
                                      and 'agentvisor_process' in name), None)
@@ -59,6 +71,8 @@ class ReviewScenario:
             self.tool_results.append(text)
         if self.phase == 'start':
             context = '\n'.join(content_text(message.get('content', '')) for message in body['messages'])
+            if 'independent milestone reviewer in a NEW session' not in context and 'RUN_PROMPT.md' in context:
+                return self.call('read', {'filePath': str(document_path(self.task, 'RUN_PROMPT.md'))})
             assert 'independent milestone reviewer in a NEW session' in context
             assert 'Do not implement the next step' in context
             assert checklist(self.task)[0]['review_status'] == 'pending', 'Claim must remain pending during review'
@@ -78,6 +92,9 @@ class ReviewScenario:
             verified = next(item for item in result['ready'] if item['process_id'] == self.process_id)
             assert verified['status'] == 'completed' and verified['exit_code'] == 0, verified
             assert 'ARTIFACT_VERIFIED' in verified['output'], verified
+            if self.finalize:
+                self.phase, self.expected = 'finalize', None
+                return {'role': 'assistant', 'content': 'Checks finished; no report saved yet.'}, 'stop'
             self.phase = 'evidence'
             return self.call('review_evidence', {})
         if self.phase == 'evidence':
@@ -140,7 +157,7 @@ def main():
             ready = {'instance': 'wire', 'context': profile.context}
             prepare_documents(task, ready)
             write_document(task, 'PROGRESS.md', '- [x] Exact artifact contents\n')
-            scenario = ReviewScenario(store, task)
+            scenario = ReviewScenario(store, task, finalize='--finalize' in sys.argv)
             engine = Supervisor(store, Runtime())
             try:
                 engine.review_steps(task, ready, profile.model_dump())
@@ -152,7 +169,9 @@ def main():
             current = store.get(task['id'])
             events = store.events(task['id'])
             assert not scenario.errors, scenario.errors
-            assert scenario.phase == 'done'
+            # A successful MCP submission is terminal; supervisor may stop CLI
+            # before it asks the model to acknowledge the tool result.
+            assert scenario.phase in ({'done'} if scenario.finalize else {'submitted', 'done'})
             reviews = current['step_reviews']
             assert reviews['goal_version'] == current['goal_version'] == 1
             accepted = list(reviews['accepted'].values())

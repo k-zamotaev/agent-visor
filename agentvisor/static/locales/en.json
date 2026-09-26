@@ -572,6 +572,7 @@
   "Автономное восстановление продолжает работу после зависания и аварийного перезапуска. Ручная пауза и остановка сохраняются.": "Autonomous recovery continues work after stalls and application crashes. Manual pause and stop requests are preserved.",
   "Перепроверить завершённые этапы по новым требованиям": "Recheck completed milestones against new requirements",
   "Отчёт приёмки сохранён": "Milestone review report saved",
+  "Сдача итогового отчёта по собранным доказательствам": "Submitting the final review from collected evidence",
   "Восстановлены отметки принятых этапов": "Accepted milestone checkmarks restored",
   "Рецензент трижды не сдал корректный отчёт. Прогресс сохранён. {0}": "The reviewer failed to submit a valid report three times. Progress is preserved. {0}"
 }

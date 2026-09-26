@@ -106,8 +106,9 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
                 store.update(task['id'], elapsed=task.get('elapsed', 0) + duration)
                 heartbeat = time.monotonic()
             if duration >= budget:
-                reason, failed = 'timeout', True
-                store.event(task['id'], 'timeout', 'Превышено время итерации или запуска', 'warning')
+                reason, failed = ('review_handoff', False) if task.get('review_handoff') else ('timeout', True)
+                if failed:
+                    store.event(task['id'], 'timeout', 'Превышено время итерации или запуска', 'warning')
                 break
             problem = idle_problem()
             if problem:
@@ -179,7 +180,7 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
                     reason = 'cancelled'
                     break
                 if time.monotonic() - started >= budget:
-                    reason, failed = 'timeout', True
+                    reason, failed = ('review_handoff', False) if task.get('review_handoff') else ('timeout', True)
                     break
                 problem = idle_problem()
                 if problem:
