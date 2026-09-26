@@ -4,6 +4,7 @@ import re
 import sys
 import threading
 import time
+import uuid
 from contextlib import nullcontext
 from pathlib import Path
 from urllib.parse import urlparse
@@ -16,12 +17,15 @@ from .recovery import failure_layer, initialize_progress, observe_progress, reco
 from .store import ACTIVE
 from .task_memory import initialize_memory, remember_iteration
 from .tool_trace import fingerprint
-from .tasks import checklist, prepare_documents, read_document, state_dir
+from .step_acceptance import mark_steps, observed_evidence, pending_steps, validate_review
+from .tasks import checklist, prepare_documents, read_document, state_dir, write_document
 
 
 class VerificationFailure(RuntimeError):
     def __init__(self, result):
-        super().__init__('Независимая проверка завершилась ошибкой; результат не принят')
+        detail = str(result.get('error_detail') or '')[:1500]
+        super().__init__('Независимая проверка завершилась ошибкой; результат не принят' +
+                         (': ' + detail if detail else ''))
         self.result = dict(result, kind='verify', reason=result.get('reason') or 'verification_failed')
 
 
@@ -198,9 +202,15 @@ class Supervisor:
                     task = remember_iteration(self.store, task, result)
                     if self.cancel.is_set():
                         break
-                    task = observe_progress(self.store, task)
                     if result['failed']:
+                        if task.get('step_acceptance', True) and task['mode'] != 'demo':
+                            mark_steps(task, pending_steps(task), False)
+                        task = observe_progress(self.store, task)
                         raise RuntimeError(f'Ошибка итерации: {result.get("error_detail") or result["reason"] or "exit " + str(result["exit_code"])}')
+                    if task.get('step_acceptance', True) and task['mode'] != 'demo':
+                        self.review_steps(task, ready, profile)
+                        task = self.store.get(task_id)
+                    task = observe_progress(self.store, task)
                     if self.complete(task):
                         break
                     failures = 0
@@ -281,6 +291,8 @@ class Supervisor:
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
 
     def complete(self, task):
+        if task.get('step_acceptance', True) and task['mode'] != 'demo' and pending_steps(task):
+            return False
         if task.get('context_version', 0) > task.get('applied_context_version', 0):
             return False
         done = read_document(task, 'DONE.md')
@@ -297,7 +309,10 @@ class Supervisor:
                 if (self.cancel.is_set() or latest['goal_version'] != task['goal_version'] or
                         latest.get('context_version', 0) > latest.get('applied_context_version', 0)):
                     return False
-                self.transition(task['id'], 'completed_unverified', 'Агент заявил о завершении. Независимая проверка не настроена.')
+                message = ('Этапы прошли приёмку. Итоговая проверка всей задачи не настроена.'
+                           if task.get('step_acceptance', True) and task['mode'] != 'demo' else
+                           'Агент заявил о завершении. Независимая проверка не настроена.')
+                self.transition(task['id'], 'completed_unverified', message)
                 return True
         self.transition(task['id'], 'verifying', 'Запуск независимой проверки результата')
         result = execute(self.store, task, task['verification'], self.cancel, kind='verify')
@@ -314,3 +329,70 @@ class Supervisor:
                 raise VerificationFailure(result)
             self.transition(task['id'], 'succeeded', 'Все шаги завершены; заданная проверка результата пройдена')
             return True
+
+    def review_steps(self, task, ready, profile):
+        steps = pending_steps(task)
+        if not steps:
+            return
+        review = {'id': uuid.uuid4().hex, 'steps': steps}
+        with self.lock:
+            latest = self.store.get(task['id'])
+            if self.cancel.is_set():
+                raise InterruptedError()
+            if latest['goal_version'] != task['goal_version']:
+                raise VerificationFailure({'failed': True, 'error_detail': 'Goal changed before review'})
+            if not mark_steps(task, steps, False):
+                raise VerificationFailure({'failed': True, 'error_detail': 'Plan changed before milestone review'})
+            write_document(task, 'STEP_REVIEW.json', '')
+        self.transition(task['id'], 'verifying', 'Независимая приёмка этапа')
+        self.store.event(task['id'], 'step_review_started', 'Проверка отмеченных этапов',
+                         data={'review_id': review['id'], 'steps': steps})
+        with self.store.connect() as db:
+            cursor = db.execute('SELECT MAX(id) FROM events WHERE task_id=?', (task['id'],)).fetchone()[0]
+        task = dict(task, review_phase=True)
+        if task['mode'] == 'opencode' and not self.command_builder:
+            task['command_policy'] = resolve_command_policy(task, self.cancel)
+        gateway = (InferenceGateway(self.store, task, profile, self.cancel)
+                   if task['mode'] == 'opencode' and not self.command_builder else nullcontext())
+        ready = {key: value for key, value in ready.items() if key not in {'api_base_url', 'command_mcp_url'}}
+        began = time.monotonic()
+        with gateway as inference:
+            if inference:
+                ready['api_base_url'] = inference.base_url
+                if task['command_policy']['allowed']:
+                    ready['command_mcp_url'] = inference.mcp_url
+            prompt = prepare_documents(task, ready, review=review)
+            health_check = (lambda: self.runtime.health(profile, ready['instance'])) if (
+                profile.get('watchdog', True) and hasattr(self.runtime, 'health')) else None
+            result = execute(self.store, task, self.command(task, prompt, ready), self.cancel,
+                             agent_environment(task), inference=inference, health_check=health_check)
+        latest = self.store.get(task['id'])
+        self.store.update(task['id'], output_tokens=latest['output_tokens'] + result['output_tokens'],
+                          agent_seconds=latest.get('agent_seconds', 0) + result['duration'],
+                          elapsed=latest['elapsed'] + time.monotonic() - began)
+        with self.lock:
+            latest = self.store.get(task['id'])
+            if self.cancel.is_set():
+                raise InterruptedError()
+            if (latest['goal_version'] != task['goal_version'] or
+                    latest.get('context_version', 0) != task.get('context_version', 0)):
+                raise VerificationFailure({'failed': True, 'error_detail': 'Goal or user context changed during review'})
+            accepted, error = validate_review(task, review, observed_evidence(self.store, task, cursor))
+            if result['failed']:
+                error = result.get('error_detail') or result.get('reason') or 'Reviewer process failed'
+            if not error and not mark_steps(task, steps, True):
+                error = 'Plan changed during milestone review'
+            if error:
+                mark_steps(task, steps, False)
+                self.store.event(task['id'], 'step_review_rejected', 'Этап не прошёл приёмку', 'warning',
+                                 data={'review_id': review['id'], 'error': error})
+                raise VerificationFailure(dict(result, failed=True, error_detail=error))
+            previous = latest.get('step_reviews') or {}
+            records = previous.get('accepted', {}) if (previous.get('goal_version') == task['goal_version'] and
+                previous.get('context_version', 0) == task.get('context_version', 0)) else {}
+            records.update(accepted)
+            self.store.update(task['id'], step_reviews={'goal_version': task['goal_version'],
+                              'context_version': task.get('context_version', 0), 'accepted': records})
+            self.store.event(task['id'], 'step_review_accepted', 'Этап подтверждён проверкой',
+                             data={'review_id': review['id'], 'accepted': accepted})
+            remember_iteration(self.store, task, result)

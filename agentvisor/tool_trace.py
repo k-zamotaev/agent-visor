@@ -40,7 +40,8 @@ class ToolTrace:
             self.pending[call_id] = entry
             self.store.event(self.task['id'], 'tool_started', tool, data=entry)
 
-    def finish(self, call_id, output='', error='', status='completed', arguments=None, tool='', inferred=False):
+    def finish(self, call_id, output='', error='', status='completed', arguments=None, tool='', inferred=False,
+               exit_code=None):
         if not call_id:
             return
         with self.lock:
@@ -49,7 +50,8 @@ class ToolTrace:
             entry = self.pending.pop(call_id, None) or self.observed_results.pop(call_id, None)
             if entry is None:
                 entry = {'call_id': call_id, 'tool': tool, 'input': bounded_input(arguments or {})}
-            entry.update(status=status, output=str(output)[-4000:], error=str(error)[-2000:])
+            entry.update(status=status, output=str(output)[-4000:], error=str(error)[-2000:],
+                         inferred=inferred, exit_code=exit_code)
             self.finished.add(call_id)
             if inferred:
                 # A next model request can arrive before the CLI emits exit/error
@@ -80,7 +82,7 @@ class ToolTrace:
             code = (state.get('metadata') or {}).get('exit')
             error = state.get('error') or (f'Command exited with code {code}' if code else '')
             self.finish(call_id, state.get('output', ''), error, status,
-                        state.get('input'), tool)
+                        state.get('input'), tool, exit_code=code)
 
     def snapshot(self):
         with self.lock:
