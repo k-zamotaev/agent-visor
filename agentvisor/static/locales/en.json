@@ -569,5 +569,9 @@
   "Использовано: {0} и {1} итераций. Осталось: {2} и {3} итераций.": "Used: {0} and {1} iterations. Remaining: {2} and {3} iterations.",
   "Для продолжения оба лимита должны быть больше уже использованных значений.": "To resume, both limits must exceed the values already used.",
   "Последние 200 записей выбранной задачи. Фрагменты рассуждений одного ответа объединены в полный текст. Исходные события сохранены в локальной базе.": "The selected task's latest 200 entries. Reasoning fragments from each response are joined into the full text. Original events are preserved in the local database.",
-  "Автономное восстановление продолжает работу после зависания и аварийного перезапуска. Ручная пауза и остановка сохраняются.": "Autonomous recovery continues work after stalls and application crashes. Manual pause and stop requests are preserved."
+  "Автономное восстановление продолжает работу после зависания и аварийного перезапуска. Ручная пауза и остановка сохраняются.": "Autonomous recovery continues work after stalls and application crashes. Manual pause and stop requests are preserved.",
+  "Перепроверить завершённые этапы по новым требованиям": "Recheck completed milestones against new requirements",
+  "Отчёт приёмки сохранён": "Milestone review report saved",
+  "Восстановлены отметки принятых этапов": "Accepted milestone checkmarks restored",
+  "Рецензент трижды не сдал корректный отчёт. Прогресс сохранён. {0}": "The reviewer failed to submit a valid report three times. Progress is preserved. {0}"
 }

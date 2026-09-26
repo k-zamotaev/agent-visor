@@ -98,6 +98,10 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
             if cancel.is_set():
                 reason = 'cancelled'
                 break
+            if task.get('review_phase') and getattr(getattr(inference, 'commands', None), 'review_submitted', False):
+                # A validated terminal submission ends review; more model reasoning adds no value.
+                reason = 'review_submitted'
+                break
             if time.monotonic() - heartbeat >= 1:
                 store.update(task['id'], elapsed=task.get('elapsed', 0) + duration)
                 heartbeat = time.monotonic()

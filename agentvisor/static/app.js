@@ -166,7 +166,7 @@ $('#chart-metric').addEventListener('change',e=>{localStorage.setItem('agentviso
 $('#context-form').addEventListener('submit',async event=>{
  event.preventDefault();if(!state.task)return;
  const button=event.submitter,taskId=state.task.id,text=$('#context-text').value;button.dataset.saving='true';button.disabled=true;
- try{await api(`/tasks/${taskId}/context`,{method:'POST',body:JSON.stringify({text})});if($('#context-text').value===text)$('#context-text').value='';toast(txt('Дополнение сохранено и ожидает передачи модели'));await refresh();}
+ try{await api(`/tasks/${taskId}/context`,{method:'POST',body:JSON.stringify({text,recheck:$('#context-recheck').checked})});if($('#context-text').value===text){$('#context-text').value='';$('#context-recheck').checked=false;}toast(txt('Дополнение сохранено и ожидает передачи модели'));await refresh();}
  catch(error){toast(error.message,true);}finally{delete button.dataset.saving;renderOverview();}
 });
 $('#language-picker').addEventListener('change',async event=>{

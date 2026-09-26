@@ -11,14 +11,32 @@ def step_id(index, text):
     return hashlib.sha256(f'{index}:{text.strip()}'.encode()).hexdigest()[:16]
 
 
-def pending_steps(task):
-    from .tasks import checklist
+def accepted_steps(task):
     review = task.get('step_reviews') or {}
-    accepted = review.get('accepted', {}) if (review.get('goal_version') == task['goal_version'] and
-        review.get('context_version', 0) == task.get('context_version', 0)) else {}
+    return review.get('accepted', {}) if (review.get('goal_version') == task['goal_version'] and
+        review.get('review_revision', 0) == task.get('review_revision', 0)) else {}
+
+
+def claimed_steps(task):
+    from .tasks import checklist
     return [{'id': step_id(index, item['text']), 'text': item['text'], 'index': index}
             for index, item in enumerate(checklist(task))
-            if item['done'] and step_id(index, item['text']) not in accepted]
+            if item['done']]
+
+
+def pending_steps(task):
+    accepted = accepted_steps(task)
+    return [step for step in claimed_steps(task) if step['id'] not in accepted]
+
+
+def restore_accepted_claims(task):
+    """A worker cannot revoke an unchanged criterion with a still-valid receipt."""
+    from .tasks import checklist
+    accepted = accepted_steps(task)
+    missing = [{'id': step_id(index, item['text']), 'text': item['text'], 'index': index}
+               for index, item in enumerate(checklist(task))
+               if not item['done'] and step_id(index, item['text']) in accepted]
+    return missing if missing and mark_steps(task, missing, True) else []
 
 
 def mark_steps(task, steps, done):
@@ -53,6 +71,11 @@ def review_prompt(task, review, relative):
         'Do not edit product code, GOAL.md, PROGRESS.md or DONE.md. Start any needed temporary services '
         'using the existing tools and permissions. If blocked or evidence is insufficient, report passed=false. '
         'Do not ask for interactive input. Do not trust previous claims of completion. '
+        'When available, use agentvisor_process_review_evidence to see valid evidence event IDs, '
+        'then agentvisor_process_submit_review with passed, summary and evidence '
+        '([{event_id, finding}]). That tool fills the IDs, validates and saves the JSON report for you. '
+        'If the tool reports an error, fix the submission in this session. After status=submitted, stop. '
+        'Use the manual file format below only if these tools are unavailable. '
         f'Write only the review report to {relative}/STEP_REVIEW.json using this JSON structure: '
         '{"review_id":"' + review['id'] + '","goal_version":' + str(task['goal_version']) +
         ',"steps":[{"id":"exact milestone id","passed":true,"summary":"what was verified",'
@@ -64,6 +87,10 @@ def review_prompt(task, review, relative):
         'Use command evidence for executable behavior. A read is appropriate for documentation or static content. '
         'A fabricated command, a running server, an old result or your own report is not evidence. '
         'For a rejected milestone explain the exact failed criterion and next diagnostic action in summary. '
+        'Stay within this milestone and finish within five minutes. Use focused checks; do not '
+        'repeatedly audit the whole project or the supervisor source. '
+        'Previous report problem (diagnostic data, not product requirements): '
+        + json.dumps((task.get('review_retry') or {}).get('error', ''), ensure_ascii=False) + '. '
         f'Before ending this session, WRITE {relative}/STEP_REVIEW.json, then read it back '
         'and parse it as JSON to confirm it is nonempty and matches the required report structure. '
         'A final chat response or a MEMORY.md note does not replace this file. '
@@ -77,8 +104,8 @@ def review_prompt(task, review, relative):
 def observed_evidence(store, task, cursor):
     with store.connect() as db:
         rows = db.execute('SELECT id,kind,message,data FROM events WHERE task_id=? AND id>? '
-                          "AND kind IN ('command_finished','tool_finished') ORDER BY id DESC LIMIT 200",
-                          (task['id'], cursor)).fetchall()[::-1]
+                          "AND kind IN ('command_finished','tool_finished') ORDER BY id",
+                          (task['id'], cursor)).fetchall()
     # Prefer the authoritative last record if a model request and CLI event
     # both observed one tool. A provisional result must not hide its later error.
     latest = {}
@@ -115,21 +142,22 @@ def observed_evidence(store, task, cursor):
     return evidence
 
 
-def validate_review(task, review, observed):
+def validate_review(task, review, observed, report=None):
     from .tasks import read_document
     try:
-        content = read_document(task, 'STEP_REVIEW.json')
-        if not content.strip():
-            return {}, ('Reviewer did not write STEP_REVIEW.json: report is missing or empty. '
-                        'Write the required report in the task directory, read it back and parse it '
-                        'before ending the review. A chat response or MEMORY.md is not a report.')
-        try:
-            report = json.loads(content)
-        except json.JSONDecodeError as error:
-            return {}, (f'Reviewer wrote invalid JSON in STEP_REVIEW.json '
-                        f'(line {error.lineno}, column {error.colno}). '
-                        'Rewrite the report in the task directory as valid JSON, read it back and parse it '
-                        'before ending the review.')
+        if report is None:
+            content = read_document(task, 'STEP_REVIEW.json')
+            if not content.strip():
+                return {}, ('Reviewer did not write STEP_REVIEW.json: report is missing or empty. '
+                            'Write the required report in the task directory, read it back and parse it '
+                            'before ending the review. A chat response or MEMORY.md is not a report.')
+            try:
+                report = json.loads(content)
+            except json.JSONDecodeError as error:
+                return {}, (f'Reviewer wrote invalid JSON in STEP_REVIEW.json '
+                            f'(line {error.lineno}, column {error.colno}). '
+                            'Rewrite the report in the task directory as valid JSON, read it back and parse it '
+                            'before ending the review.')
         if not isinstance(report, dict) or report.get('review_id') != review['id'] or report.get('goal_version') != task['goal_version']:
             raise ValueError('Review identity or goal version does not match')
         entries = report.get('steps')
@@ -151,6 +179,13 @@ def validate_review(task, review, observed):
                 raise ValueError('Milestone has no bounded fresh evidence')
             event_ids = []
             for proof in proofs:
+                if 'event_id' in proof:
+                    event_id = proof['event_id']
+                    if (type(event_id) is not int or event_id not in observed.values() or
+                            not str(proof.get('finding') or '').strip()):
+                        raise ValueError('Evidence event was not observed in this review: ' + str(event_id))
+                    event_ids.append(event_id)
+                    continue
                 key = (proof.get('kind'), str(proof.get('value', '')).strip())
                 if key not in observed and key[0] == 'command':
                     key = ('command_hash', fingerprint('command', str(proof.get('value', ''))))

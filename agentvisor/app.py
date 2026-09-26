@@ -47,6 +47,7 @@ class ModelDownload(BaseModel):
 
 class TaskContext(BaseModel):
     text: str = Field(min_length=1, max_length=6000)
+    recheck: bool = False
 
     @field_validator('text')
     @classmethod
@@ -217,7 +218,7 @@ def create_app(data_dir=None):
             current = store.get(task_id)
             if current['status'] in {'succeeded', 'completed_unverified'}:
                 raise ValueError('Завершённая задача неизменна. Создайте новую задачу.')
-            return task_view(store.add_context(task_id, body.text), language(request))
+            return task_view(store.add_context(task_id, body.text, recheck=body.recheck), language(request))
 
     @app.post('/api/tasks/{task_id}/{action}')
     def control(task_id: str, action: str, request: Request):

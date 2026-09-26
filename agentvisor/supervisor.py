@@ -17,7 +17,8 @@ from .recovery import failure_layer, initialize_progress, observe_progress, reco
 from .store import ACTIVE
 from .task_memory import initialize_memory, remember_iteration
 from .tool_trace import fingerprint
-from .step_acceptance import mark_steps, observed_evidence, pending_steps, validate_review
+from .step_acceptance import (accepted_steps, claimed_steps, mark_steps, observed_evidence,
+                              pending_steps, restore_accepted_claims, validate_review)
 from .session_roles import session_role
 from .checkpoint_flow import checkpoint_after_acceptance, prepare_checkpoint
 from .skill_library import record_skills, skill_prompt
@@ -87,6 +88,8 @@ class Supervisor:
             self.current = task_id
             self.cancel = threading.Event()
             self.requested = 'paused'
+            if task['status'] == 'blocked' and (task.get('review_retry') or {}).get('protocol_failures', 0) >= 3:
+                self.store.update(task_id, review_retry=dict(task['review_retry'], protocol_failures=0))
             self.store.update(task_id, status='preparing', reason='', started=task.get('started') or time.time())
             self.worker = threading.Thread(target=self.run, args=(task_id,), name='agentvisor-worker', daemon=True)
             self.worker.start()
@@ -144,7 +147,12 @@ class Supervisor:
         failures = 0
         try:
             while not self.cancel.is_set():
-                task = initialize_progress(self.store, self.store.get(task_id))
+                task = self.store.get(task_id)
+                restored = restore_accepted_claims(task)
+                if restored:
+                    self.store.event(task_id, 'accepted_claims_restored', 'Восстановлены отметки принятых этапов',
+                                     data={'steps': restored})
+                task = initialize_progress(self.store, task)
                 task = initialize_memory(self.store, task)
                 failures = task.get('failure_streak', 0)
                 if task['iteration'] >= task['max_iterations']:
@@ -183,6 +191,22 @@ class Supervisor:
                     preparing_runtime = False
                     # Read goal again after loading: it may have changed in the UI.
                     task = initialize_memory(self.store, self.store.get(task_id))
+                    retry = task.get('review_retry') or {}
+                    if (retry.get('goal_version') == task['goal_version'] and
+                            retry.get('step_id') in {s['id'] for s in pending_steps(task)}):
+                        if retry.get('protocol_failures', 0) >= 3:
+                            self.transition(task_id, 'blocked',
+                                'Рецензент трижды не сдал корректный отчёт. Прогресс сохранён. ' + retry.get('error', ''), 'error')
+                            break
+                        task = self.store.update(task_id, iteration=task['iteration'] + 1,
+                                                 elapsed=base_elapsed + time.monotonic() - started)
+                        self.review_steps(task, ready, profile)
+                        task = observe_progress(self.store, self.store.get(task_id))
+                        self.store.update(task_id, failure_streak=0, review_retry=None)
+                        if self.complete(task):
+                            break
+                        self.cancel.wait(task['backoff_seconds'])
+                        continue
                     task = prepare_checkpoint(self.store, task)
                     task = dict(task, recipe_context=skill_prompt(self.store, task))
                     effort = session_effort(task, ready)
@@ -213,7 +237,8 @@ class Supervisor:
                             self.store.event(task_id, 'effort_selected', 'Выбран режим работы текущей модели', data=effort)
                         health_check = (lambda: self.runtime.health(profile, ready['instance'])) if (
                             task['mode'] != 'demo' and profile.get('watchdog', True) and hasattr(self.runtime, 'health')) else None
-                        prior_claims = {s['id'] for s in pending_steps(task)}
+                        prior_claims = {s['id'] for s in claimed_steps(task)}
+                        claim_goal_version = task['goal_version']
                         result = execute(self.store, task, self.command(task, prompt, ready), self.cancel,
                                          agent_environment(task), health_check=health_check, inference=inference)
                     task = self.store.update(task_id, elapsed=base_elapsed + time.monotonic() - started,
@@ -224,14 +249,16 @@ class Supervisor:
                     task = remember_iteration(self.store, task, result)
                     if self.cancel.is_set():
                         break
-                    if role['name'] == 'diagnostician':
-                        mark_steps(task, [s for s in pending_steps(task) if s['id'] not in prior_claims], False)
+                    restore_accepted_claims(task)
+                    if role['name'] == 'diagnostician' and task['goal_version'] == claim_goal_version:
+                        mark_steps(task, [s for s in claimed_steps(task) if s['id'] not in prior_claims], False)
                     if result['failed']:
-                        if task.get('step_acceptance', True) and task['mode'] != 'demo':
-                            mark_steps(task, [s for s in pending_steps(task) if s['id'] not in prior_claims], False)
+                        if (task.get('step_acceptance', True) and task['mode'] != 'demo' and
+                                task['goal_version'] == claim_goal_version):
+                            mark_steps(task, [s for s in claimed_steps(task) if s['id'] not in prior_claims], False)
                         task = observe_progress(self.store, task)
                         raise RuntimeError(f'Ошибка итерации: {result.get("error_detail") or result["reason"] or "exit " + str(result["exit_code"])}')
-                    if task.get('step_acceptance', True) and task['mode'] != 'demo':
+                    if role['name'] == 'executor' and task.get('step_acceptance', True) and task['mode'] != 'demo':
                         self.review_steps(task, ready, profile)
                         task = self.store.get(task_id)
                     task = observe_progress(self.store, task)
@@ -391,7 +418,8 @@ class Supervisor:
                          data={'review_id': review['id'], 'steps': steps})
         with self.store.connect() as db:
             cursor = db.execute('SELECT MAX(id) FROM events WHERE task_id=?', (task['id'],)).fetchone()[0]
-        task = dict(task, review_phase=True, review_request=review, active_effort=effort)
+        task = dict(task, review_phase=True, review_request=review, review_cursor=cursor,
+                    active_effort=effort, timeout_seconds=min(task['timeout_seconds'], 300))
         if task['mode'] == 'opencode' and not self.command_builder:
             task['command_policy'] = resolve_command_policy(task, self.cancel)
         gateway = (InferenceGateway(self.store, task, profile, self.cancel)
@@ -400,8 +428,7 @@ class Supervisor:
         with gateway as inference:
             if inference:
                 ready['api_base_url'] = inference.base_url
-                if task['command_policy']['allowed']:
-                    ready['command_mcp_url'] = inference.mcp_url
+                ready['command_mcp_url'] = inference.mcp_url
             prompt = prepare_documents(task, ready, review=review)
             health_check = (lambda: self.runtime.health(profile, ready['instance'])) if (
                 profile.get('watchdog', True) and hasattr(self.runtime, 'health')) else None
@@ -428,14 +455,23 @@ class Supervisor:
                 # A broken report/process is not evidence that implementation failed.
                 if not result['failed'] and error.startswith('Milestone rejected:'):
                     mark_steps(task, steps, False)
+                    self.store.update(task['id'], review_retry=None)
+                else:
+                    # A report transport/schema problem belongs to the reviewer, not product repair.
+                    previous_retry = latest.get('review_retry') or {}
+                    attempts = previous_retry.get('attempts', 0) if previous_retry.get('step_id') == steps[0]['id'] else 0
+                    self.store.update(task['id'], review_retry={
+                        'goal_version': task['goal_version'], 'step_id': steps[0]['id'],
+                        'error': error[:1500], 'attempts': attempts + 1,
+                        'protocol_failures': (previous_retry.get('protocol_failures', 0) + 1
+                                              if not result['failed'] else 0)})
                 self.store.event(task['id'], 'step_review_rejected', 'Этап не прошёл приёмку', 'warning',
                                  data={'review_id': review['id'], 'error': error})
                 raise VerificationFailure(dict(result, failed=True, error_detail=error))
-            previous = latest.get('step_reviews') or {}
-            records = previous.get('accepted', {}) if (previous.get('goal_version') == task['goal_version'] and
-                previous.get('context_version', 0) == task.get('context_version', 0)) else {}
+            records = dict(accepted_steps(latest))
             records.update(accepted)
-            accepted_task = self.store.update(task['id'], step_reviews={'goal_version': task['goal_version'],
+            accepted_task = self.store.update(task['id'], review_retry=None, step_reviews={'goal_version': task['goal_version'],
+                                             'review_revision': task.get('review_revision', 0),
                                              'context_version': task.get('context_version', 0), 'accepted': records})
             self.store.event(task['id'], 'step_review_accepted', 'Этап подтверждён проверкой',
                              data={'review_id': review['id'], 'accepted': accepted})

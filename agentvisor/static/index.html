@@ -55,6 +55,7 @@
           <label for="context-text">Дополнительные указания для текущей задачи</label>
           <p id="context-help" class="quiet">Необязательно. Агент продолжает работать самостоятельно. Дополнение будет передано при следующем обращении к модели.</p>
           <textarea id="context-text" rows="3" maxlength="6000" required aria-describedby="context-help" placeholder="Например, используйте порт 8015; данные в каталоге samples нужно сохранить."></textarea>
+          <label><input id="context-recheck" type="checkbox"> Перепроверить завершённые этапы по новым требованиям</label>
           <button class="button" type="submit">Передать контекст</button>
           <div id="context-notes" class="context-notes"></div>
         </form>

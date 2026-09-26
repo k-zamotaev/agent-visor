@@ -118,6 +118,8 @@ def test_tool_diagnostics_and_repeat_count_survive_restart_bounded(tmp_path):
 
 
 def test_verification_and_tool_oom_do_not_change_model_profile():
+    assert failure_layer({'kind': 'verify', 'reason': 'runtime_unavailable'}) == 'runtime'
+    assert failure_layer({'kind': 'verify', 'reason': 'inference_error'}) == 'runtime'
     assert failure_layer({'kind': 'verify'}, 'out of memory', preparing=True) == 'verification'
     assert failure_layer({'reason': 'tool_failure'}, 'out of memory') == 'tool'
     assert failure_layer({'pending_tools': [{'command': 'npm test'}]}, 'out of memory') == 'tool'

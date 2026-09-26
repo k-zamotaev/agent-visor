@@ -29,7 +29,10 @@ def session_contract(task):
         data['report_path'] = (root / 'STEP_REVIEW.json').as_posix()
         instructions += (
             'Review only the requested steps. Do not implement or edit product code or task '
-            'documents. Write STEP_REVIEW.json at report_path before ending, then read it back '
+            'documents. Prefer agentvisor_process_review_evidence and agentvisor_process_submit_review '
+            'with passed, summary, evidence=[{event_id, finding}]; the tool validates and saves the report. '
+            'End immediately after successful submission. If these tools are unavailable, '
+            'write STEP_REVIEW.json at report_path before ending, then read it back '
             'and parse it. Required structure: {"review_id": review.id, "goal_version": goal_version, '
             '"steps": [{"id": requested step id, "passed": boolean, "summary": string, '
             '"evidence": [{"kind": "command" or "read", "value": exact observed command or path, '

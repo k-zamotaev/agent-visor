@@ -50,6 +50,7 @@ class CommandMCP:
             'allowed': False, 'permission': 'deny', 'reason': 'Command permissions have not been verified'}
         self.lock = threading.RLock()
         self.commands, self.recorded = {}, set()
+        self.review_submitted = False
 
     def close(self):
         try:
@@ -105,6 +106,13 @@ class CommandMCP:
         if self.cancel.is_set():
             raise ValueError('Task cancelled')
         with self.lock:
+            if name in {'review_evidence', 'submit_review'}:
+                from .review_tools import call
+                self.snapshot()
+                result = call(self.store, self.task, name, arguments)
+                if name == 'submit_review' and result.get('status') == 'submitted':
+                    self.review_submitted = True
+                return result
             if name == 'exec':
                 cwd = Path(arguments.get('cwd') or self.task['workspace'])
                 if not cwd.is_absolute():
@@ -161,6 +169,9 @@ class CommandMCP:
             result = {}
         elif method == 'tools/list':
             result = {'tools': schemas()}
+            if self.task.get('review_phase'):
+                from .review_tools import schemas as review_schemas
+                result['tools'] += review_schemas()
         elif method == 'tools/call':
             try:
                 data = self.call(params.get('name'), params.get('arguments') or {})

@@ -10,11 +10,11 @@ from .loop_detection import detect_loop
 def failure_layer(result=None, error='', preparing=False):
     """Recover the failing component, not every failure by reloading the model."""
     result = result or {}
-    if result.get('kind') == 'verify' or result.get('reason') == 'verification_failed':
-        return 'verification'
     reason = result.get('reason') or ''
-    if reason == 'runtime_unavailable':
+    if reason in {'runtime_unavailable', 'inference_error', 'inference_timeout', 'inference_failed', 'model_error'}:
         return 'runtime'
+    if result.get('kind') == 'verify' or reason == 'verification_failed':
+        return 'verification'
     if result.get('pending_tools') or reason in {'tool_timeout', 'tool_failure', 'tool_loop'}:
         return 'tool'
     detail = str(error or result.get('error_detail') or '')
@@ -54,12 +54,17 @@ def bounded_tools(values):
 
 
 def observe_progress(store, task):
+    from .step_acceptance import accepted_steps
     completed = sum(item['done'] for item in checklist(task))
+    accepted = len(accepted_steps(task))
     previous = task.get('progress_watch') or {}
     if previous.get('goal_version') != task['goal_version']:
         previous = {'goal_version': task['goal_version'], 'completed': completed, 'stalls': 0}
-    advanced = completed > previous['completed']
+    previous_accepted = previous.get('accepted', 0) if (
+        previous.get('review_revision', 0) == task.get('review_revision', 0)) else 0
+    advanced = completed > previous['completed'] or accepted > previous_accepted
     watch = dict(previous, completed=max(completed, previous['completed']),
+                 accepted=max(accepted, previous_accepted), review_revision=task.get('review_revision', 0),
                  stalls=0 if advanced else previous['stalls'] + 1)
     updates = {'progress_watch': watch}
     if advanced:

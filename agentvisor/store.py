@@ -88,7 +88,7 @@ class Store:
                        (task_id, time.time(), level, kind, str(message)[:6000],
                         json.dumps(data, ensure_ascii=False)))
 
-    def add_context(self, task_id, text):
+    def add_context(self, task_id, text, *, recheck=False):
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT body FROM tasks WHERE id=?', (task_id,)).fetchone()
@@ -99,7 +99,9 @@ class Store:
             if len(additions) >= 40 or sum(len(item['text']) for item in additions) + len(text) > 20000:
                 raise ValueError('Дополнения превысили 20000 символов или 40 записей. Уточните основную цель.')
             version = task.get('context_version', 0) + 1
-            additions.append({'version': version, 'text': text, 'created': time.time()})
+            additions.append({'version': version, 'text': text, 'created': time.time(), 'recheck': recheck})
+            if recheck:
+                task['review_revision'] = task.get('review_revision', 0) + 1
             task.update(context_additions=additions, context_version=version, updated=time.time())
             db.execute('UPDATE tasks SET body=?, updated=? WHERE id=?',
                        (json.dumps(task, ensure_ascii=False), task['updated'], task_id))

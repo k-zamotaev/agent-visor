@@ -41,7 +41,7 @@ class ReviewScenario:
         names = [tool['function']['name'] for tool in body.get('tools', [])]
         if not names:
             return {'role': 'assistant', 'content': 'Independent review wire check'}, 'stop'
-        for suffix in ('exec', 'wait_any'):
+        for suffix in ('exec', 'wait_any', 'review_evidence', 'submit_review'):
             self.names[suffix] = next((name for name in names if name.endswith('_' + suffix)
                                      and 'agentvisor_process' in name), None)
             assert self.names[suffix], f'Missing process tool {suffix}'
@@ -78,21 +78,17 @@ class ReviewScenario:
             verified = next(item for item in result['ready'] if item['process_id'] == self.process_id)
             assert verified['status'] == 'completed' and verified['exit_code'] == 0, verified
             assert 'ARTIFACT_VERIFIED' in verified['output'], verified
-            review = next(event['data'] for event in reversed(self.store.events(self.task['id']))
-                          if event['kind'] == 'step_review_started')
-            self.report = {'review_id': review['review_id'], 'goal_version': self.task['goal_version'],
-                'steps': [{'id': step['id'], 'passed': True,
-                           'summary': 'Actual artifact contents verified by a fresh process',
-                           'evidence': [{'kind': 'command', 'value': self.command,
-                                         'finding': 'Exit 0 and ARTIFACT_VERIFIED'}]}
-                          for step in review['steps']]}
-            self.phase = 'read_report'
-            return self.call('read', {'filePath': str(document_path(self.task, 'STEP_REVIEW.json'))})
-        if self.phase == 'read_report':
-            self.phase = 'write_report'
-            return self.call('write', {'filePath': str(document_path(self.task, 'STEP_REVIEW.json')),
-                                      'content': json.dumps(self.report, indent=2)})
-        assert self.phase == 'write_report', self.phase
+            self.phase = 'evidence'
+            return self.call('review_evidence', {})
+        if self.phase == 'evidence':
+            entries = json.loads(text)['evidence']
+            proof = next(item for item in entries if 'ARTIFACT_VERIFIED' in item['output'])
+            self.phase = 'submitted'
+            return self.call('submit_review', {'passed': True,
+                'summary': 'Actual artifact contents verified by a fresh process',
+                'evidence': [{'event_id': proof['event_id'], 'finding': 'Exit 0 and ARTIFACT_VERIFIED'}]})
+        assert self.phase == 'submitted', self.phase
+        assert json.loads(text)['status'] == 'submitted'
         self.phase, self.expected = 'done', None
         return {'role': 'assistant', 'content': 'STEP_REVIEW_WIRE_PASSED'}, 'stop'
 
@@ -174,7 +170,7 @@ def main():
                 'tool_results': len(scenario.tool_results), 'accepted_milestones': len(accepted),
                 'successful_command_events': len(commands), 'checked': [
                     'new review session', 'native verification command', 'wait_any',
-                    'real report write tool', 'authoritative evidence', 'accepted receipt']}))
+                    'typed report submission', 'authoritative evidence IDs', 'accepted receipt']}))
     finally:
         server.shutdown()
         server.server_close()

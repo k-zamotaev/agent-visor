@@ -166,7 +166,8 @@ def test_invalid_report_is_rejected_and_changed_goal_requires_new_review(tmp_pat
     assert validate_review(task, {'id': 'one', 'steps': steps}, {})[1]
     task = store.update(task['id'], step_reviews={'goal_version': 1, 'accepted': {steps[0]['id']: {}}})
     assert not pending_steps(task)
-    assert pending_steps(dict(task, context_version=1))
+    assert not pending_steps(dict(task, context_version=1))
+    assert pending_steps(dict(task, review_revision=1))
     task = store.update(task['id'], goal_version=2)
     assert pending_steps(task)
 
