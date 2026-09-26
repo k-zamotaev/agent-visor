@@ -49,7 +49,7 @@ def report(store, task, *, passed=True, fresh=True, stale=False):
                   for step in review['steps']]}))
 
 
-@pytest.mark.parametrize('outcome', ['accepted', 'rejected', 'missing_evidence', 'stale', 'process_failed', 'cancelled', 'context_changed'])
+@pytest.mark.parametrize('outcome', ['accepted', 'rejected', 'missing_evidence', 'stale', 'process_failed', 'cancelled', 'context_changed', 'empty_report', 'invalid_json'])
 def test_supervisor_reviews_fresh_session_before_counting_progress(tmp_path, monkeypatch, outcome):
     store, engine, task = make(tmp_path, step_acceptance=True, max_failures=1, max_iterations=1)
     phases = []
@@ -66,6 +66,8 @@ def test_supervisor_reviews_fresh_session_before_counting_progress(tmp_path, mon
             assert checklist(current)[0]['review_status'] == 'pending'
             report(store, current, passed=outcome != 'rejected', fresh=outcome != 'missing_evidence',
                    stale=outcome == 'stale')
+            if outcome in {'empty_report', 'invalid_json'}:
+                write_document(current, 'STEP_REVIEW.json', '' if outcome == 'empty_report' else '{broken')
             if outcome == 'cancelled':
                 engine.cancel.set()
             if outcome == 'context_changed':
@@ -90,6 +92,23 @@ def test_supervisor_reviews_fresh_session_before_counting_progress(tmp_path, mon
         assert checklist(current)[0]['done'] == (outcome != 'rejected')
         if outcome == 'rejected':
             assert 'Expected UI missing' in current['recovery_context']['error']
+        if outcome in {'empty_report', 'invalid_json'}:
+            expected = 'did not write' if outcome == 'empty_report' else 'invalid JSON'
+            assert expected in current['recovery_context']['error']
+            assert 'STEP_REVIEW.json' in current['recovery_context']['error']
+            assert not (current.get('step_reviews') or {}).get('accepted')
+
+
+@pytest.mark.parametrize('content', [None, '', ' \n\t', '{', '```json\n{}\n```'])
+def test_missing_or_malformed_review_has_actionable_error(tmp_path, content):
+    _, _, task = make(tmp_path)
+    if content is not None:
+        write_document(task, 'STEP_REVIEW.json', content)
+    accepted, error = validate_review(task, {'id': 'new', 'steps': []}, {})
+    assert accepted == {}
+    assert 'STEP_REVIEW.json' in error
+    assert 'read it back and parse it' in error
+    assert ('missing or empty' if content is None or not content.strip() else 'invalid JSON') in error
 
 
 def test_failed_worker_cannot_advance_with_unreviewed_checkmarks(tmp_path, monkeypatch):
