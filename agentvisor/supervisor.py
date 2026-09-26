@@ -19,6 +19,7 @@ from .task_memory import initialize_memory, remember_iteration
 from .tool_trace import fingerprint
 from .step_acceptance import mark_steps, observed_evidence, pending_steps, validate_review
 from .session_roles import session_role
+from .checkpoint_flow import checkpoint_after_acceptance, prepare_checkpoint
 from .tasks import checklist, prepare_documents, read_document, state_dir, write_document
 
 
@@ -172,6 +173,7 @@ class Supervisor:
                     preparing_runtime = False
                     # Read goal again after loading: it may have changed in the UI.
                     task = initialize_memory(self.store, self.store.get(task_id))
+                    task = prepare_checkpoint(self.store, task)
                     if task['mode'] == 'opencode' and not self.command_builder:
                         policy = resolve_command_policy(task, self.cancel)
                         task = dict(task, command_policy=policy)
@@ -404,4 +406,5 @@ class Supervisor:
                               'context_version': task.get('context_version', 0), 'accepted': records})
             self.store.event(task['id'], 'step_review_accepted', 'Этап подтверждён проверкой',
                              data={'review_id': review['id'], 'accepted': accepted})
+            checkpoint_after_acceptance(self.store, self.store.get(task['id']))
             remember_iteration(self.store, task, result)
