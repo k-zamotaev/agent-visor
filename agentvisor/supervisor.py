@@ -464,7 +464,9 @@ class Supervisor:
                         'goal_version': task['goal_version'], 'step_id': steps[0]['id'],
                         'error': error[:1500], 'attempts': attempts + 1,
                         'protocol_failures': (previous_retry.get('protocol_failures', 0) + 1
-                                              if not result['failed'] else 0)})
+                                              if result.get('reason') not in {
+                                                  'runtime_unavailable', 'inference_error', 'inference_timeout',
+                                                  'inference_failed', 'model_error', 'cancelled'} else 0)})
                 self.store.event(task['id'], 'step_review_rejected', 'Этап не прошёл приёмку', 'warning',
                                  data={'review_id': review['id'], 'error': error})
                 raise VerificationFailure(dict(result, failed=True, error_detail=error))

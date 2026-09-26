@@ -105,7 +105,8 @@ def test_worker_cannot_erase_valid_acceptance_but_changed_requirements_can(tmp_p
     assert not any(s['done'] for s in checklist(task))
 
 
-def test_reviewer_protocol_failure_cannot_burn_all_iterations(tmp_path, monkeypatch):
+@pytest.mark.parametrize('review_timeout', [False, True])
+def test_reviewer_protocol_failure_cannot_burn_all_iterations(tmp_path, monkeypatch, review_timeout):
     from test_step_acceptance import result
     store, engine, task = make(tmp_path, step_acceptance=True, autonomous_recovery=True, max_iterations=20)
     phases = []
@@ -114,6 +115,8 @@ def test_reviewer_protocol_failure_cannot_burn_all_iterations(tmp_path, monkeypa
         phases.append('review' if current.get('review_phase') else 'work')
         if not current.get('review_phase'):
             write_document(task, 'PROGRESS.md', '- [x] Implement\n')
+        elif review_timeout:
+            return result(failed=True, reason='timeout', error_detail='Review did not finish before its deadline')
         return result()
 
     monkeypatch.setattr('agentvisor.supervisor.execute', execute)
@@ -121,6 +124,6 @@ def test_reviewer_protocol_failure_cannot_burn_all_iterations(tmp_path, monkeypa
     current = store.get(task['id'])
     assert phases == ['work', 'review', 'review', 'review']
     assert current['status'] == 'blocked'
-    assert 'STEP_REVIEW.json' in current['reason']
+    assert ('deadline' if review_timeout else 'STEP_REVIEW.json') in current['reason']
     assert checklist(current)[0]['done']
     assert len(pending_steps(current)) == 1
