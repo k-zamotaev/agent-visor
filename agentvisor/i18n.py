@@ -15,7 +15,8 @@ def _pattern(text):
 
 TEMPLATES = [(source, target, _pattern(source), _pattern(target))
              for source, target in ENGLISH.items() if re.search(r'\{\d+\}', source)]
-RAW_EVENTS = {'text', 'reasoning', 'tool', 'agent_error', 'agent_event', 'output', 'verification_output'}
+RAW_EVENTS = {'text', 'reasoning', 'tool', 'tool_started', 'tool_finished', 'command_started',
+              'command_finished', 'agent_error', 'agent_event', 'output', 'verification_output'}
 
 
 def language_from_header(header):

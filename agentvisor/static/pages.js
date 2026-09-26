@@ -87,7 +87,7 @@ function historyList(){
  const root=$('#history-list');if(!root)return;
  const search=$('#history-search').value.toLowerCase(),level=$('#history-level').value,kind=$('#history-kind').value;
  const events=context.state.events;
- const rows=events.filter(e=>(!level||level===e.level)&&(!kind||kind===e.kind)&&(!search||`${e.message} ${e.kind}`.toLowerCase().includes(search)));
+ const rows=events.filter(e=>(!level||level===e.level)&&(!kind||kind===e.kind||kind==='tool'&&['tool_started','tool_finished','command_started','command_finished'].includes(e.kind))&&(!search||`${e.message} ${e.kind} ${JSON.stringify(e.data)}`.toLowerCase().includes(search)));
  const version=`${getLanguage()}:${rows.at(-1)?.id}:${rows.length}:${search}:${level}:${kind}:${context.state.focusEvent}`;
  if(root.dataset.version!==version&&!root.contains(document.activeElement)){
   root.innerHTML=rows.length?eventRows(rows,true,context.state.focusEvent,kind==='reasoning'):markup('<div class="empty small">Нет событий по выбранному фильтру.</div>');

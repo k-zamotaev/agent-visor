@@ -9,11 +9,18 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .execution import agent_environment, execute
+from .command_policy import resolve_command_policy
 from .inference import InferenceGateway
 from .processes import executable, recover_process
-from .recovery import initialize_progress, observe_progress, record_recovery
+from .recovery import failure_layer, initialize_progress, observe_progress, record_recovery
 from .store import ACTIVE
 from .tasks import checklist, prepare_documents, read_document, state_dir
+
+
+class VerificationFailure(RuntimeError):
+    def __init__(self, result):
+        super().__init__('Независимая проверка завершилась ошибкой; результат не принят')
+        self.result = dict(result, kind='verify', reason=result.get('reason') or 'verification_failed')
 
 
 class Supervisor:
@@ -129,6 +136,7 @@ class Supervisor:
                     break
                 self.transition(task_id, 'preparing', 'Подготовка модели и контекста')
                 result = None
+                preparing_runtime = task['mode'] != 'demo'
                 try:
                     profile = task.get('resolved_profile') or task['profile'].copy()
                     if task['mode'] == 'demo':
@@ -153,13 +161,21 @@ class Supervisor:
                         ready = self.runtime.ensure(profile, self.cancel)
                         profile.pop('_reload', None)
                     self.store.update(task_id, resolved_profile=profile, runtime_instance=ready['instance'])
+                    preparing_runtime = False
                     # Read goal again after loading: it may have changed in the UI.
                     task = self.store.get(task_id)
+                    if task['mode'] == 'opencode' and not self.command_builder:
+                        policy = resolve_command_policy(task, self.cancel)
+                        task = dict(task, command_policy=policy)
+                        if not policy['allowed']:
+                            self.store.event(task_id, 'command_policy', policy['reason'], 'warning')
                     gateway = (InferenceGateway(self.store, task, profile, self.cancel)
                                if task['mode'] == 'opencode' and not self.command_builder else nullcontext())
                     with gateway as inference:
                         if inference:
                             ready = dict(ready, api_base_url=inference.base_url)
+                            if task['command_policy']['allowed']:
+                                ready['command_mcp_url'] = inference.mcp_url
                         prompt = prepare_documents(task, ready)
                         task = self.store.update(task_id, iteration=task['iteration'] + 1,
                                                  applied_goal_version=task['goal_version'],
@@ -204,10 +220,13 @@ class Supervisor:
                         break
                     failures += 1
                     task = self.store.update(task_id, failure_streak=failures)
+                    if isinstance(error, VerificationFailure):
+                        result = error.result
                     message = str(error)[:2500]
+                    layer = failure_layer(result, message, preparing=preparing_runtime)
                     stalled = task.get('progress_watch', {}).get('stalls', 0) >= task['stall_limit']
                     repair = stalled or failures >= task['max_failures']
-                    task = record_recovery(self.store, task, result, message, repair=repair)
+                    task = record_recovery(self.store, task, result, message, repair=repair, layer=layer)
                     if not task.get('autonomous_recovery', True):
                         if stalled:
                             self.transition(task_id, 'blocked', 'Нет новых завершённых шагов. Проверьте план и журнал.', 'warning')
@@ -216,12 +235,12 @@ class Supervisor:
                             self.transition(task_id, 'blocked', 'Исчерпаны попытки: ' + message, 'error')
                             break
                     profile = (task.get('resolved_profile') or task['profile']).copy()
-                    if result and result['failed'] and (profile['runtime'] == 'ollama' or
+                    if layer == 'runtime' and (profile['runtime'] == 'ollama' or
                             urlparse(profile['base_url']).hostname in {'localhost', '127.0.0.1', '::1'}):
                         profile['_reload'] = True
                         task = self.store.update(task_id, resolved_profile=profile)
                         self.store.event(task_id, 'model_reload_requested', 'Следующая попытка перезагрузит экземпляр модели AgentVisor', 'warning')
-                    if task['auto_tune'] and re.search(r'exceeds.*context|exceed_context|context_length_exceeded', message, re.I):
+                    if task['auto_tune'] and layer == 'context':
                         profile = (task.get('resolved_profile') or task['profile']).copy()
                         request_size = re.search(r'request \((\d+) tokens\)', message, re.I)
                         needed = int(request_size[1]) + profile['output_limit'] + 4096 if request_size else profile['context'] * 2
@@ -231,7 +250,7 @@ class Supervisor:
                             profile['context'] = context
                             self.store.update(task_id, resolved_profile=profile, context_floor=context)
                             self.store.event(task_id, 'context_increased', f'Контекст увеличен до {context}: запрос OpenCode не помещался', 'warning')
-                    if task['auto_tune'] and re.search(r'out of memory|insufficient memory|oom', message, re.I):
+                    if task['auto_tune'] and layer == 'runtime' and re.search(r'out of memory|insufficient memory|\boom\b', message, re.I):
                         profile = (task.get('resolved_profile') or task['profile']).copy()
                         smaller = max(8192, profile['context'] // 2)
                         if smaller >= task.get('context_floor', 8192) and smaller < profile['context']:
@@ -243,7 +262,9 @@ class Supervisor:
                     reason = (f'Автовосстановление: попытка {failures}. {message}' if repair else
                               f'Повтор {failures}/{task["max_failures"]}: {message}')
                     self.transition(task_id, 'recovering', reason, 'warning')
-                    self.cancel.wait(min(task['backoff_seconds'] * (2 ** min(failures - 1, 12)), 300))
+                    delay = (min(task['backoff_seconds'] * (2 ** min(failures - 1, 12)), 300)
+                             if layer == 'runtime' else task['backoff_seconds'])
+                    self.cancel.wait(delay)
         except Exception as error:
             self.transition(task_id, 'failed', str(error)[:2500], 'error')
         finally:
@@ -281,6 +302,6 @@ class Supervisor:
                 return False
             self.store.event(task['id'], 'verification_finished', 'Результат независимой проверки', data=result)
             if result['failed']:
-                raise RuntimeError('Независимая проверка завершилась ошибкой; результат не принят')
+                raise VerificationFailure(result)
             self.transition(task['id'], 'succeeded', 'Все шаги завершены; заданная проверка результата пройдена')
             return True

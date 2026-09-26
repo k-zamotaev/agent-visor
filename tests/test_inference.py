@@ -74,7 +74,9 @@ def test_gateway_preserves_stream_records_thoughts_and_delivers_new_context(tmp_
     url, requests = model_server
     store, engine, task = make(tmp_path)
     profile = dict(task['profile'], base_url=url)
-    body = {'model': 'test', 'messages': [{'role': 'user', 'content': 'Original goal'}], 'stream': True}
+    body = {'model': 'test', 'messages': [{'role': 'user', 'content': 'Original goal'}], 'stream': True,
+            'tools': [{'type': 'function', 'function': {'name': 'read',
+                       'parameters': {'type': 'object', 'properties': {}}}}]}
     with InferenceGateway(store, task, profile, engine.cancel) as gateway, httpx.Client(trust_env=False) as client:
         endpoint = gateway.base_url + '/chat/completions'
         response = client.post(endpoint, json=body, headers={'Authorization': 'Bearer test-only'})

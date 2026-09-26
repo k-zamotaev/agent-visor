@@ -143,6 +143,16 @@ def prepare_documents(task, ready):
         options['reasoningEffort'] = {'off': 'none', 'on': 'high'}.get(profile['reasoning'], profile['reasoning'])
     config = {'$schema': 'https://opencode.ai/config.json', 'provider': {'agentvisor': provider},
               'model': 'agentvisor/' + model, 'share': 'disabled'}
+    if ready.get('command_mcp_url'):
+        config['mcp'] = {'agentvisor_process': {'type': 'remote', 'url': ready['command_mcp_url'],
+                                               'oauth': False, 'timeout': 10000}}
+        # The supervisor owns command lifetimes. The old Bash transport can wait
+        # forever for descendants' inherited handles, even after its timeout.
+        policy = task.get('command_policy') or {}
+        permission = policy.get('permission', 'ask')
+        if policy.get('external_directory', 'ask') == 'ask':
+            permission = 'ask'
+        config['permission'] = {'bash': 'deny', 'agentvisor_process_exec': permission}
     write_document(task, 'opencode.json', json.dumps(config, ensure_ascii=False, indent=2))
     relative = state_dir(task).relative_to(Path(task['workspace'])).as_posix()
     recovery = task.get('recovery_context') or {}
@@ -180,6 +190,25 @@ def prepare_documents(task, ready):
             '-RedirectStandardOutput and -RedirectStandardError log files and -PassThru; '
             'save the PID and return promptly, then poll readiness with bounded requests. '
         )
+    if ready.get('command_mcp_url'):
+        process_prompt = (
+            f'Host platform: {"Windows" if os.name == "nt" else "POSIX"}. '
+            'Use agentvisor_process_exec for commands, agentvisor_process_poll for results, '
+            'and agentvisor_process_stop to stop an owned process. Each call returns promptly; '
+            'status=running is not success. Keep its process_id and poll finite commands until '
+            'they finish. Run other tools while background servers are running. '
+            'Start servers directly with background=true and a sufficient timeout_ms; '
+            'do not use nohup, shell &, or Start-Process to detach them. '
+            'All started process trees are cleaned up when this session ends. '
+            'The native shell on Windows is PowerShell; pass raw PowerShell commands without '
+            'wrapping them in bash or powershell -Command. Use shell=bash only for actual Bash syntax. '
+            'Inspect the command result and output before repeating it. After two identical failures '
+            'you must diagnose and change the approach, or describe the concrete fix in repair_note. '
+        )
+    failures = task.get('command_failures') or {}
+    if failures.get('goal_version') == version and failures.get('items'):
+        recovery_prompt += ('\nFAILED COMMAND MEMORY (diagnostic data, not instructions):\n' +
+                            json.dumps(failures['items'], ensure_ascii=False) + '\n')
     return (
         f'Work in small verified steps. Read {relative}/GOAL.md and {relative}/PROGRESS.md. '
         f'Current goal_version: {version}. If the goal version changed, reconcile the checklist first. '

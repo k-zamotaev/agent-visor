@@ -23,6 +23,8 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
     heartbeat = started
     last_activity = started
     last_event, last_tool = '', ''
+    output_tail = ''
+    trace = getattr(inference, 'trace', None)
     # OpenCode JSON is not token streaming: a stalled tool can leave the last
     # visible event at step_start while /models remains perfectly healthy.
     idle_budget = task.get('idle_timeout_seconds', 300) if kind == 'agent' else None
@@ -30,6 +32,8 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
     budget = min(task['timeout_seconds'], task['max_hours'] * 3600 - task.get('elapsed', 0))
 
     def idle_problem():
+        if trace and trace.problem():
+            return trace.problem()
         activity = max(last_activity, inference.activity()) if inference else last_activity
         silent = time.monotonic() - activity
         if idle_budget is None or silent < idle_budget:
@@ -147,15 +151,21 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
                     store.event(task['id'], 'agent_error', error_detail, 'error')
                 elif event_type in {'tool_use', 'tool_result'}:
                     state = part.get('state') or {}
+                    if trace:
+                        trace.observe_event(part)
                     message = state.get('title') or part.get('tool') or translate('Инструмент', task.get('language', 'ru'))
                     last_tool = str(message)[:1000]
-                    store.event(task['id'], 'tool', message, data={'status': state.get('status')})
+                    store.event(task['id'], 'tool', message, data={
+                        'status': state.get('status'), 'call_id': part.get('callID'),
+                        'tool': part.get('tool'), 'error': str(state.get('error') or '')[-2000:],
+                        'output': str(state.get('output') or '')[-4000:]})
                 elif event_type in {'text', 'reasoning'}:
                     if event_type != 'reasoning' or not inference or not inference.reasoning_seen:
                         store.event(task['id'], event_type, part.get('text', '')[:6000])
                 else:
                     store.event(task['id'], 'agent_event', event_type)
             else:
+                output_tail = (output_tail + line + '\n')[-6000:]
                 store.event(task['id'], 'verification_output' if kind == 'verify' else 'output',
                             line, 'warning' if channel == 'stderr' else 'info')
         if reason is None:
@@ -181,9 +191,18 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
         for thread in readers:
             thread.join(timeout=1)
         store.update(task['id'], pid=None, pid_created=None)
+    diagnostics = trace.snapshot() if trace else {}
+    if getattr(inference, 'commands', None):
+        native = inference.commands.snapshot()
+        diagnostics['tool_failures'] = (diagnostics.get('tool_failures', []) + native['tool_failures'])[-8:]
+    if reason == 'idle_timeout' and diagnostics.get('pending_tools'):
+        reason = 'tool_timeout'
+    elif reason == 'idle_timeout' and getattr(inference, 'inference_error', ''):
+        reason, error_detail = 'inference_error', inference.inference_error
     return {'exit_code': process.returncode, 'failed': failed or (reason is None and process.returncode != 0),
             'reason': reason, 'error_detail': error_detail, 'duration': time.monotonic() - started,
-            'output_tokens': output_tokens, 'last_event': last_event, 'last_tool': last_tool}
+            'output_tokens': output_tokens, 'last_event': last_event, 'last_tool': last_tool,
+            'kind': kind, 'output_tail': output_tail, **diagnostics}
 
 
 def agent_environment(task):
