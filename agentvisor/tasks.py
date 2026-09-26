@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .models import DEFAULT_PROFILE
+from .loop_detection import strategy_prompt
 
 
 class Profile(BaseModel):
@@ -175,6 +176,7 @@ def prepare_documents(task, ready):
                 'Preserve required checks and user constraints; never mark a blocked check as passed. '
                 'Record the exact repair, evidence and remaining obstacle for the next session. '
             )
+        recovery_prompt += strategy_prompt(recovery.get('failure_cause'))
     process_prompt = (
         f'Host platform: {"Windows" if os.name == "nt" else "POSIX"}. '
         f'The supervisor restarts this session after {task.get("idle_timeout_seconds", 300)} seconds '

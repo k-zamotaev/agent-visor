@@ -4,6 +4,7 @@ import json
 import re
 
 from .tasks import checklist
+from .loop_detection import detect_loop
 
 
 def failure_layer(result=None, error='', preparing=False):
@@ -101,10 +102,18 @@ def record_recovery(store, task, result=None, error='', repair=False, layer=None
     matching = [item for item in history if item.get('fingerprint') == entry['fingerprint']]
     entry['repeated_failure_count'] = 1 + max((item.get('repeated_failure_count', 1)
                                              for item in matching), default=0)
+    step = next((item['text'][:1500] for item in checklist(task) if not item['done']), '')
+    cause = detect_loop(entry, history, step)
+    if cause:
+        entry['failure_cause'] = cause
+        if cause['attempts'] >= 3:
+            repair = True
+            store.event(task['id'], 'strategy_change',
+                        'Повторяется причина сбоя. Требуется смена подхода.', 'warning', data=cause)
     history.append(entry)
     context = dict(entry, goal_version=task['goal_version'],
                    attempts=previous.get('attempts', 0) + 1,
                    repair=repair or previous.get('repair', False), history=history[-5:],
-                   next_step=next((item['text'][:1500] for item in checklist(task) if not item['done']), ''),
+                   next_step=step,
                    stalled_iterations=task.get('progress_watch', {}).get('stalls', 0))
     return store.update(task['id'], recovery_context=context)

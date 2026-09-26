@@ -535,6 +535,7 @@
   "Средняя скорость завершённых итераций.": "Average speed of completed iterations.",
   "Рассуждения видны, если модель передаёт их в ответе. Они не являются проверенным результатом работы.": "Reasoning is shown when the model provides it. It is not a verified work result.",
   "Тип событий": "Event type",
+  "Повторяется причина сбоя. Требуется смена подхода.": "The same failure cause recurred. A different approach is required.",
   "Весь ход работы": "All activity",
   "Ответы модели": "Model responses",
   "Инструменты": "Tools",
