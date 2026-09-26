@@ -6,6 +6,18 @@ from agentvisor.tasks import NewTask, read_document, state_dir, write_document
 from test_supervisor import finish, make
 
 
+def test_ui_revalidates_cached_files_after_deployment(tmp_path):
+    with TestClient(create_app(tmp_path / 'data'), client=('127.0.0.1', 50000)) as client:
+        for path in ('/', '/static/app.js', '/static/limits.js', '/static/locales/en.json'):
+            response = client.get(path)
+            assert response.status_code == 200
+            assert response.headers['cache-control'] == 'no-cache'
+            cached = client.get(path, headers={'if-none-match': response.headers['etag']})
+            assert cached.status_code in {200, 304}
+            assert cached.headers['cache-control'] == 'no-cache'
+        assert client.get('/api/health').headers['cache-control'] == 'no-store'
+
+
 def test_exhausted_task_can_extend_budget_and_resume_without_reset(tmp_path):
     store, engine, task = make(tmp_path)
     task = store.update(task['id'], status='blocked', elapsed=43232.45, iteration=45,

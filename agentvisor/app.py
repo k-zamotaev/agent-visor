@@ -118,6 +118,9 @@ def create_app(data_dir=None):
             response.headers['Cache-Control'] = 'no-store'
             response.headers['Content-Language'] = language(request)
             response.headers['Vary'] = 'Accept-Language'
+        elif request.url.path == '/' or request.url.path.startswith('/static/'):
+            # Revalidate the unversioned UI files after a managed source update.
+            response.headers['Cache-Control'] = 'no-cache'
         return response
 
     @app.exception_handler(KeyError)
