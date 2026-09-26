@@ -28,8 +28,8 @@ def test_idle_watchdog_stops_agent_even_when_model_is_healthy(tmp_path, scenario
 
 def test_real_agent_events_extend_idle_deadline(tmp_path):
     # Leave room for Windows interpreter startup on a busy host. The fixture
-    # emits work for 1.2 seconds, longer than this budget, so renewal is required.
-    store, engine, task = make(tmp_path, 'active', idle_timeout_seconds=1.0)
+    # emits work for 3 seconds, longer than this budget, so renewal is required.
+    store, engine, task = make(tmp_path, 'active', idle_timeout_seconds=2.0)
     engine.start(task['id'])
     finish(engine)
     assert store.get(task['id'])['status'] == 'completed_unverified'

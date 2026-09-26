@@ -59,7 +59,7 @@ def detect_loop(entry, history, step):
     return cause
 
 
-def strategy_prompt(cause):
+def strategy_prompt(cause, diagnostic_only=False):
     if not cause or cause.get('attempts', 0) < 3:
         return ''
     action = (
@@ -70,6 +70,15 @@ def strategy_prompt(cause):
         'a materially different implementation or supported tool after inspecting availability. '
         'Keep the original acceptance criteria; do not bypass the failing check.'
     )
+    if diagnostic_only:
+        action = (
+            'Reproduce the failure with the smallest bounded probe. Inspect its actual output '
+            'and state a falsifiable cause and the next repair for the executor. '
+            if cause['strategy'] == 'isolate' else
+            'The previous diagnosis did not remove the failure. Recheck its assumptions, inspect '
+            'an available alternative tool or implementation, and hand the executor a different '
+            'testable repair plan. Preserve the original acceptance criteria. '
+        )
     return ('\nSTRATEGY CHANGE REQUIRED: different commands have reproduced the same recorded cause. '
             + action + ' Record the hypothesis, probe result and changed condition in PROGRESS.md. '
             'A renamed command, new explanation or longer timeout alone is not evidence of repair.\n')

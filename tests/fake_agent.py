@@ -30,7 +30,7 @@ if scenario in {'step_hang', 'eof_hang', 'noisy_hang', 'start_chatter', 'active'
             print(json.dumps({'type': 'step_start', 'part': {}}), flush=True)
             time.sleep(0.05)
     if scenario == 'active':
-        for step in range(12):
+        for step in range(30):
             print(json.dumps({'type': 'text', 'part': {'text': f'Working on {step}'}}), flush=True)
             time.sleep(0.1)
         child.terminate()

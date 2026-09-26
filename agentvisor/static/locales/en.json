@@ -268,6 +268,7 @@
   "Запуск независимой проверки результата": "Starting independent result verification",
   "Результат независимой проверки": "Independent verification result",
   "Независимая проверка завершилась ошибкой; результат не принят": "Independent verification failed; the result was not accepted",
+  "Независимая проверка завершилась ошибкой; результат не принят: {0}": "Independent verification failed; the result was not accepted: {0}",
   "Все шаги завершены; заданная проверка результата пройдена": "All steps complete; the configured result verification passed",
   "Превышено время итерации или запуска": "Iteration or run time limit exceeded",
   "Ответ модели завершён: {0}": "Model response finished: {0}",

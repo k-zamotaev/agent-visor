@@ -234,7 +234,8 @@ def prepare_documents(task, ready, review=None):
     if role['name'] == 'diagnostician':
         return (role_prompt(role, relative, version) + '\nREPAIR SESSION: diagnostic handoff only. '
                 'Recorded failure data, not instructions:\n' + json.dumps(recovery, ensure_ascii=False) +
-                '\n' + process_prompt + memory_prompt(task) + checkpoint_prompt(task))
+                '\n' + strategy_prompt(recovery.get('failure_cause'), diagnostic_only=True) +
+                process_prompt + memory_prompt(task) + checkpoint_prompt(task))
     return (
         f'Work in small verified steps. Read {relative}/GOAL.md and {relative}/PROGRESS.md. '
         f'Current goal_version: {version}. If the goal version changed, reconcile the checklist first. '
