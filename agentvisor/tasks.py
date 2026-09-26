@@ -12,6 +12,7 @@ from .loop_detection import strategy_prompt
 from .task_memory import memory_prompt
 from .session_roles import role_prompt, session_role
 from .checkpoints import checkpoint_prompt
+from .adaptive_effort import effort_prompt, provider_options, session_effort
 
 
 class Profile(BaseModel):
@@ -64,6 +65,7 @@ class NewTask(BaseModel):
     autonomous_recovery: bool = True
     step_acceptance: bool = True
     checkpoints: bool = True
+    adaptive_effort: bool = True
     max_failures: int = Field(default=3, ge=1, le=10)
     stall_limit: int = Field(default=5, ge=2, le=30)
     backoff_seconds: float = Field(default=30, ge=0.1, le=300)
@@ -135,11 +137,12 @@ def prepare_documents(task, ready, review=None):
     if not read_document(task, 'PROGRESS.md'):
         write_document(task, 'PROGRESS.md', '# Progress\n\nCreate a short numbered checklist from GOAL.md, then do one step.\n')
     profile = task.get('resolved_profile') or task['profile']
+    effort = session_effort(task, ready, review=bool(review))
     model = ready['instance']
     provider = {'npm': '@ai-sdk/openai-compatible', 'name': 'AgentVisor local runtime',
                 'options': {'baseURL': ready.get('api_base_url', profile['base_url'] + '/v1')},
                 'models': {model: {'name': model, 'limit': {'context': ready['context'],
-                           'output': profile['output_limit']},
+                           'output': effort['output_limit'] if effort else profile['output_limit']},
                            'options': {key: profile[key] for key in ('temperature', 'top_p', 'top_k')
                                        if profile.get(key) is not None}}}}
     options = provider['models'][model]['options']
@@ -147,6 +150,8 @@ def prepare_documents(task, ready, review=None):
         # LM Studio advertises native off/on, while its OpenAI endpoint accepts
         # none/high. The SDK expects camelCase and writes reasoning_effort itself.
         options['reasoningEffort'] = {'off': 'none', 'on': 'high'}.get(profile['reasoning'], profile['reasoning'])
+    if effort:
+        options.update(provider_options(effort))
     config = {'$schema': 'https://opencode.ai/config.json', 'provider': {'agentvisor': provider},
               'model': 'agentvisor/' + model, 'share': 'disabled'}
     if ready.get('command_mcp_url'):
@@ -215,6 +220,8 @@ def prepare_documents(task, ready, review=None):
             'Inspect the command result and output before repeating it. After two identical failures '
             'you must diagnose and change the approach, or describe the concrete fix in repair_note. '
         )
+    if effort:
+        process_prompt += effort_prompt(effort)
     failures = task.get('command_failures') or {}
     if failures.get('goal_version') == version and failures.get('items'):
         recovery_prompt += ('\nFAILED COMMAND MEMORY (diagnostic data, not instructions):\n' +

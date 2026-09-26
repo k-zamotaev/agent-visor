@@ -115,6 +115,24 @@ def test_context_updates_are_atomic_and_delivery_does_not_go_backwards(tmp_path)
     assert store.get(task['id'])['applied_context_version'] == 5
 
 
+def test_gateway_enforces_session_ceiling_only_for_work_requests(tmp_path, model_server):
+    url, requests = model_server
+    store, engine, task = make(tmp_path)
+    task = dict(task, active_effort={'output_limit': 2048})
+    with InferenceGateway(store, task, dict(task['profile'], base_url=url), engine.cancel) as gateway:
+        with httpx.Client(trust_env=False) as client:
+            body = {'model': 'same-model', 'messages': [], 'stream': True, 'tools': [{'type': 'function'}]}
+            for fields in ({'max_tokens': 9000}, {'max_completion_tokens': 9000}, {'max_tokens': 1000}, {}):
+                assert client.post(gateway.base_url + '/chat/completions', json=dict(body, **fields)).status_code == 200
+            client.post(gateway.base_url + '/chat/completions', json={'model': 'same-model', 'messages': [], 'max_tokens': 4000})
+    assert requests[0]['body']['max_tokens'] == 2048
+    assert requests[1]['body']['max_completion_tokens'] == 2048
+    assert requests[2]['body']['max_tokens'] == 1000
+    assert requests[3]['body']['max_tokens'] == 2048
+    assert requests[4]['body']['max_tokens'] == 4000
+    assert all(request['body']['model'] == 'same-model' for request in requests)
+
+
 def test_context_api_keeps_running_task_and_goal_unchanged(tmp_path):
     app = create_app(tmp_path / 'api')
     with TestClient(app, client=('127.0.0.1', 50000)) as client:

@@ -21,6 +21,7 @@ from .step_acceptance import mark_steps, observed_evidence, pending_steps, valid
 from .session_roles import session_role
 from .checkpoint_flow import checkpoint_after_acceptance, prepare_checkpoint
 from .skill_library import record_skills, skill_prompt
+from .adaptive_effort import session_effort
 from .tasks import checklist, prepare_documents, read_document, state_dir, write_document
 
 
@@ -176,6 +177,8 @@ class Supervisor:
                     task = initialize_memory(self.store, self.store.get(task_id))
                     task = prepare_checkpoint(self.store, task)
                     task = dict(task, recipe_context=skill_prompt(self.store, task))
+                    effort = session_effort(task, ready)
+                    task = dict(task, active_effort=effort)
                     if task['mode'] == 'opencode' and not self.command_builder:
                         policy = resolve_command_policy(task, self.cancel)
                         task = dict(task, command_policy=policy)
@@ -191,13 +194,15 @@ class Supervisor:
                         role = session_role(task)
                         prompt = prepare_documents(task, ready)
                         task = self.store.update(task_id, iteration=task['iteration'] + 1,
-                                                 active_role=role, last_session_role=role,
+                                                 active_role=role, last_session_role=role, active_effort=effort,
                                                  applied_goal_version=task['goal_version'],
                                                  elapsed=base_elapsed + time.monotonic() - started)
                         if self.cancel.is_set():
                             break
                         self.transition(task_id, 'running', f'Итерация {task["iteration"]}: следующий шаг')
                         self.store.event(task_id, 'session_role', 'Роль текущей сессии', data=role)
+                        if effort:
+                            self.store.event(task_id, 'effort_selected', 'Выбран режим работы текущей модели', data=effort)
                         health_check = (lambda: self.runtime.health(profile, ready['instance'])) if (
                             task['mode'] != 'demo' and profile.get('watchdog', True) and hasattr(self.runtime, 'health')) else None
                         result = execute(self.store, task, self.command(task, prompt, ready), self.cancel,
@@ -356,13 +361,16 @@ class Supervisor:
             write_document(task, 'STEP_REVIEW.json', '')
         self.transition(task['id'], 'verifying', 'Независимая приёмка этапа')
         role = session_role(task, review=True)
-        self.store.update(task['id'], active_role=role)
+        effort = session_effort(task, ready, review=True)
+        self.store.update(task['id'], active_role=role, active_effort=effort)
         self.store.event(task['id'], 'session_role', 'Роль текущей сессии', data=role)
+        if effort:
+            self.store.event(task['id'], 'effort_selected', 'Выбран режим работы текущей модели', data=effort)
         self.store.event(task['id'], 'step_review_started', 'Проверка отмеченных этапов',
                          data={'review_id': review['id'], 'steps': steps})
         with self.store.connect() as db:
             cursor = db.execute('SELECT MAX(id) FROM events WHERE task_id=?', (task['id'],)).fetchone()[0]
-        task = dict(task, review_phase=True)
+        task = dict(task, review_phase=True, active_effort=effort)
         if task['mode'] == 'opencode' and not self.command_builder:
             task['command_policy'] = resolve_command_policy(task, self.cancel)
         gateway = (InferenceGateway(self.store, task, profile, self.cancel)

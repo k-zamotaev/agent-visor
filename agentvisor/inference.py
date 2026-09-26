@@ -207,6 +207,13 @@ class InferenceGateway:
 
     async def forward(self, handler, body):
         self.trace.observe_messages(body.get('messages', []))
+        effort = self.task.get('active_effort') or {}
+        ceiling = effort.get('output_limit')
+        if body.get('tools') and type(ceiling) is int and ceiling > 0:
+            fields = [field for field in ('max_tokens', 'max_completion_tokens') if field in body]
+            for field in fields or ['max_tokens']:
+                requested = body.get(field)
+                body[field] = min(requested, ceiling) if type(requested) is int and requested > 0 else ceiling
         task = self.store.get(self.task['id'])
         additions = task.get('context_additions', [])
         # OpenCode also uses this provider for titles and conversation summaries.

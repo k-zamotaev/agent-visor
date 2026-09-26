@@ -546,6 +546,7 @@
   "Контрольная точка недоступна; работа продолжается": "Source checkpoint unavailable; continuing work",
   "Подготовлена отдельная копия для альтернативного решения": "An isolated copy is ready for an alternative approach",
   "Сохранены проверенные сценарии для этого проекта": "Verified recipes saved for this workspace",
+  "Выбран режим работы текущей модели": "Working mode selected for the current model",
   "Весь ход работы": "All activity",
   "Ответы модели": "Model responses",
   "Инструменты": "Tools",
