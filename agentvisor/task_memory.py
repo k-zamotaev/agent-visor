@@ -37,11 +37,11 @@ def remember_iteration(store, task, result):
         if status in {'running', 'stopped', 'cancelled'} or data.get('reason') == 'cancelled':
             continue
         arguments = data.get('input') or {}
-        command = str(arguments.get('command') or row['message'])[:300]
-        cwd = str(arguments.get('cwd') or task['workspace'])[:200]
-        key = hashlib.sha256((command + '\n' + cwd).encode()).hexdigest()[:16]
+        command = str(arguments.get('command') or row['message'])
+        cwd = str(arguments.get('cwd') or task['workspace'])
+        key = arguments.get('fingerprint') or hashlib.sha256((command + '\n' + cwd).encode()).hexdigest()[:16]
         observation = {'key': key, 'event_id': row['id'], 'time': row['time'],
-                       'command': command, 'cwd': cwd, 'exit_code': data.get('exit_code'),
+                       'command': command[:300], 'cwd': cwd[:200], 'exit_code': data.get('exit_code'),
                        'status': status or ('failed' if data.get('failed') else 'completed'),
                        'output': str(data.get('output') or data.get('output_tail') or '')[-400:]}
         observations = [item for item in observations if item['key'] != key][-4:] + [observation]

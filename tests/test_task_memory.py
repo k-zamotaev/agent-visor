@@ -76,3 +76,26 @@ def test_supervisor_captures_handoff_before_next_session(tmp_path):
     finish(engine)
     assert '"iteration": 1' in prompts[1]
     assert store.get(task['id'])['task_memory']['iteration'] == 2
+
+
+def test_long_commands_with_same_prefix_retain_distinct_results(tmp_path):
+    store, _, task = make(tmp_path)
+    task = initialize_memory(store, task)
+    for suffix in ('first', 'second'):
+        store.event(task['id'], 'command_finished', 'x' * 350 + suffix,
+                    data={'status': 'completed', 'exit_code': 0})
+    task = remember_iteration(store, task, {})
+    assert len(task['task_memory']['observations']) == 2
+
+
+def test_goal_changed_during_loading_keeps_first_new_handoff(tmp_path):
+    store, engine, task = make(tmp_path)
+    original = engine.runtime.ensure
+    def ensure(*args):
+        store.update(task['id'], goal_version=2)
+        return original(*args)
+    engine.runtime.ensure = ensure
+    engine.start(task['id'])
+    finish(engine)
+    memory = store.get(task['id'])['task_memory']
+    assert memory['goal_version'] == 2 and memory['iteration'] == 1

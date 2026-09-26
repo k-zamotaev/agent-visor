@@ -73,7 +73,8 @@ class CommandMCP:
             result.get('status') in {'timed_out', 'output_limit', 'failed'} or bool(result.get('exit_code')))
         self.store.event(self.task['id'], 'command_finished', command['command'],
                          'warning' if failed else 'info', data=dict(result, input={
-                             'command': command['command'][:1500], 'cwd': command['cwd'][:500]}))
+                             'command': command['command'][:1500], 'cwd': command['cwd'][:500],
+                             'fingerprint': command['fingerprint']}))
         if not failed or self.cancel.is_set():
             if result['status'] == 'completed' and result.get('exit_code') == 0:
                 items = self.memory()

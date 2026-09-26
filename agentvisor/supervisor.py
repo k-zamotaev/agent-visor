@@ -15,6 +15,7 @@ from .processes import executable, recover_process
 from .recovery import failure_layer, initialize_progress, observe_progress, record_recovery
 from .store import ACTIVE
 from .task_memory import initialize_memory, remember_iteration
+from .tool_trace import fingerprint
 from .tasks import checklist, prepare_documents, read_document, state_dir
 
 
@@ -165,7 +166,7 @@ class Supervisor:
                     self.store.update(task_id, resolved_profile=profile, runtime_instance=ready['instance'])
                     preparing_runtime = False
                     # Read goal again after loading: it may have changed in the UI.
-                    task = self.store.get(task_id)
+                    task = initialize_memory(self.store, self.store.get(task_id))
                     if task['mode'] == 'opencode' and not self.command_builder:
                         policy = resolve_command_policy(task, self.cancel)
                         task = dict(task, command_policy=policy)
@@ -305,7 +306,9 @@ class Supervisor:
             if (self.cancel.is_set() or latest['goal_version'] != task['goal_version'] or
                     latest.get('context_version', 0) > latest.get('applied_context_version', 0)):
                 return False
-            self.store.event(task['id'], 'verification_finished', 'Результат независимой проверки', data=result)
+            self.store.event(task['id'], 'verification_finished', 'Результат независимой проверки',
+                             data=dict(result, input={'command': str(task['verification'])[:1500],
+                                                     'fingerprint': fingerprint('verify', task['verification'])}))
             remember_iteration(self.store, task, result)
             if result['failed']:
                 raise VerificationFailure(result)
