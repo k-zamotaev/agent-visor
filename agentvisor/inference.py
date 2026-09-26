@@ -10,6 +10,7 @@ import httpx
 
 from .command_mcp import CommandMCP
 from .tool_trace import ToolTrace
+from .session_contract import apply_session_contract, session_contract
 
 
 CONTEXT_START = '<agentvisor-task-context>\n'
@@ -105,6 +106,7 @@ class StreamMetrics:
 class InferenceGateway:
     def __init__(self, store, task, profile, cancel):
         self.store, self.task, self.profile, self.cancel = store, task, profile, cancel
+        self.session_contract = session_contract(task)
         self.last_activity = time.monotonic()
         self.reasoning_seen = False
         self.stopping = threading.Event()
@@ -207,6 +209,8 @@ class InferenceGateway:
 
     async def forward(self, handler, body):
         self.trace.observe_messages(body.get('messages', []))
+        if body.get('tools'):
+            apply_session_contract(body, self.session_contract)
         effort = self.task.get('active_effort') or {}
         ceiling = effort.get('output_limit')
         if body.get('tools') and type(ceiling) is int and ceiling > 0:

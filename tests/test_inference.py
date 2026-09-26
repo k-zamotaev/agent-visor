@@ -84,7 +84,8 @@ def test_gateway_preserves_stream_records_thoughts_and_delivers_new_context(tmp_
         task = store.add_context(task['id'], 'Use port 8015')
         response = client.post(endpoint, json=body)
         assert response.status_code == 200
-        assert requests[0]['body']['messages'] == body['messages']
+        assert requests[0]['body']['messages'][1:] == body['messages']
+        assert requests[0]['body']['messages'][0]['role'] == 'system'
         assert requests[0]['authorization'] == 'Bearer test-only'
         assert requests[0]['body']['stream_options']['include_usage'] is True
         assert 'Use port 8015' in requests[1]['body']['messages'][-1]['content']

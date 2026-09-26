@@ -391,7 +391,7 @@ class Supervisor:
                          data={'review_id': review['id'], 'steps': steps})
         with self.store.connect() as db:
             cursor = db.execute('SELECT MAX(id) FROM events WHERE task_id=?', (task['id'],)).fetchone()[0]
-        task = dict(task, review_phase=True, active_effort=effort)
+        task = dict(task, review_phase=True, review_request=review, active_effort=effort)
         if task['mode'] == 'opencode' and not self.command_builder:
             task['command_policy'] = resolve_command_policy(task, self.cancel)
         gateway = (InferenceGateway(self.store, task, profile, self.cancel)
