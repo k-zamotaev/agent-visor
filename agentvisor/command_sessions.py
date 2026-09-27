@@ -96,9 +96,15 @@ class CommandSessions:
             output, error = folder / 'stdout.log', folder / 'stderr.log'
             kwargs = ({'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt'
                       else {'start_new_session': True})
+            # Match the supervisor's process transport. Console.OutputEncoding
+            # does not set Python's encoding when stdout/stderr are redirected;
+            # all descendants must emit the UTF-8 that _tail decodes.
+            environment = dict(os.environ)
+            environment.setdefault('PYTHONIOENCODING', 'utf-8')
+            environment.setdefault('PYTHONUTF8', '1')
             with output.open('wb') as stdout, error.open('wb') as stderr:
                 process = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL,
-                                           stdout=stdout, stderr=stderr, **kwargs)
+                                           stdout=stdout, stderr=stderr, env=environment, **kwargs)
             try:
                 process.visor_job = WindowsJob(process.pid) if os.name == 'nt' else None
             except OSError:

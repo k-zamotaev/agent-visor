@@ -125,6 +125,28 @@ def test_native_powershell_preserves_variables(sessions):
     assert result['output'].strip() == 'literal $value'
 
 
+def test_python_and_nested_child_preserve_cyrillic_diagnostics(sessions, monkeypatch):
+    # Exercise the normal server environment, where these variables need not
+    # already exist, and real redirected native processes through the shell.
+    monkeypatch.delenv('PYTHONIOENCODING', raising=False)
+    monkeypatch.delenv('PYTHONUTF8', raising=False)
+    child = 'import sys; print("Дочерний вывод"); print("Дочерняя ошибка", file=sys.stderr)'
+    source = ('import subprocess,sys\n'
+              'print("Ожидалось: купить телефон", flush=True)\n'
+              'print("Получено: купить ноутбук", file=sys.stderr, flush=True)\n'
+              f'subprocess.run([sys.executable, "-c", {child!r}], check=True)\n')
+    result = sessions.start({'command': python_command(source), 'yield_ms': 0})
+    result = wait_result(sessions, result['process_id'])
+    assert result['status'] == 'completed' and result['exit_code'] == 0
+    stdout = Path(result['stdout_log']).read_bytes().decode('utf-8')
+    stderr = Path(result['stderr_log']).read_bytes().decode('utf-8')
+    for expected in ('Ожидалось: купить телефон', 'Дочерний вывод'):
+        assert expected in stdout and expected in result['output']
+    for expected in ('Получено: купить ноутбук', 'Дочерняя ошибка'):
+        assert expected in stderr and expected in result['output']
+    assert '\ufffd' not in result['output']
+
+
 def test_poll_preserves_logs_and_bounds_output(sessions):
     result = sessions.start({'command': python_command('print("x"*16000)'), 'yield_ms': 0})
     result = wait_result(sessions, result['process_id'])
