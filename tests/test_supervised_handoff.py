@@ -79,7 +79,7 @@ def test_next_work_session_and_independent_reviews_finish_after_handoff(tmp_path
 
 
 @pytest.mark.parametrize('reason', ['context_handoff', 'work_stalled'])
-def test_repeated_empty_handoffs_stop_after_one_diagnosis_without_fake_failures(tmp_path, monkeypatch, reason):
+def test_repeated_empty_handoffs_bound_missing_diagnostic_reports_without_fake_failures(tmp_path, monkeypatch, reason):
     store, engine, task, profiles = setup(tmp_path, step_acceptance=False)
     plan, receipts = copy.deepcopy(task['progress_plan']), copy.deepcopy(task['step_reviews'])
     roles = []
@@ -92,7 +92,10 @@ def test_repeated_empty_handoffs_stop_after_one_diagnosis_without_fake_failures(
     engine.run(task['id'])
     current = store.get(task['id'])
     assert current['status'] == 'blocked' and current['iteration'] == 6
-    assert roles == ['executor'] * 4 + ['diagnostician', 'executor']
+    assert roles == ['executor'] * 4 + ['diagnostician', 'diagnostician']
+    assert current['session_continuation']['diagnosed'] is False
+    assert current['session_continuation']['diagnostic_attempts'] == 2
+    assert 'не сохранили отчёт' in current['reason']
     assert current['failure_streak'] == 2
     assert current['progress_plan'] == plan and current['step_reviews'] == receipts
     assert current['recoveries'] == 0

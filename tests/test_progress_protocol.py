@@ -167,7 +167,7 @@ def test_non_executor_cannot_update_progress_through_mcp(tmp_path, role):
     tools = CommandMCP(store, task, engine.cancel)
     names = [s['name'] for s in tools.dispatch({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})['result']['tools']]
     assert 'get_progress' in names and 'update_progress' in names
-    assert tools.call('get_progress', {})['steps'][0]['review_status'] == 'accepted'
+    assert tools.call('get_progress', {'full': True})['steps'][0]['review_status'] == 'accepted'
     result = tools.dispatch({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {
         'name': 'update_progress', 'arguments': {'goal_version': 1, 'expected_revision': 1,
                                                'operation': 'append', 'steps': ['Illicit']}}})['result']

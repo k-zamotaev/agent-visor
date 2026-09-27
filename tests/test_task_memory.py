@@ -104,7 +104,17 @@ def test_goal_changed_during_loading_keeps_first_new_handoff(tmp_path):
 
 
 def prompt_payload(task):
-    return json.loads(memory_prompt(task).splitlines()[2])
+    text = memory_prompt(task).split(':\n', 1)[1]
+    payload, _ = json.JSONDecoder().raw_decode(text)
+    def unwrap(value):
+        if isinstance(value, dict):
+            if set(value) == {'text_chunks'}:
+                return ''.join(value['text_chunks'])
+            return {key: unwrap(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [unwrap(item) for item in value]
+        return value
+    return unwrap(payload)
 
 
 def record_file(store, task, path, operation='write', **extra):
@@ -275,6 +285,9 @@ def test_diagnostic_proposal_requires_fresh_observed_write_and_exact_scope(tmp_p
     assert 'diagnostic_proposal' not in prompt_payload(dict(task, review_revision=1))
     task = store.update(task['id'], iteration=8, active_role={'name': 'executor'})
     task = remember_iteration(store, task)
+    assert task['task_memory']['diagnostic_proposal'] == proposal
+    assert prompt_payload(task)['diagnostic_proposal'] == proposal
+    task = remember_iteration(store, store.update(task['id'], iteration=16))
     assert 'diagnostic_proposal' not in task['task_memory']
 
 
@@ -319,3 +332,132 @@ def test_directory_read_never_becomes_check_or_next_diagnostic_action(tmp_path):
     assert len(task['task_memory']['observations']) == 3
     assert all(not item['is_verification_result'] for item in task['task_memory']['observations'])
     assert prompt_payload(task)['next_action'] is None
+
+
+def test_diagnosis_survives_executor_rotations_but_not_requirement_change(tmp_path):
+    from agentvisor.progress_plan import initialize
+    from agentvisor.tasks import document_path
+    store, _, task = make(tmp_path)
+    write_document(task, 'PROGRESS.md', '- [ ] Export\n')
+    task = initialize_memory(store, initialize(store, task))
+    identity = task['progress_plan']['steps'][0]['id']
+    task = store.update(task['id'], iteration=133, active_role={'name': 'diagnostician'})
+    notes = ('goal_version: 1\niteration: 133\ncontext_version: 0\nreview_revision: 0\n'
+             f'current_step_id: {identity}\nBackend exists. Check route shadowing, add export tests and UI.\n')
+    write_document(task, 'MEMORY.md', notes)
+    record_file(store, task, document_path(task, 'MEMORY.md'))
+    task = remember_iteration(store, task)
+    for iteration in (134, 135, 136):
+        task = remember_iteration(store, store.update(task['id'], iteration=iteration,
+                                  active_role={'name': 'executor'}), {'reason': 'context_handoff'})
+        assert prompt_payload(task)['diagnostic_proposal']['hypothesis'] == notes
+    task = remember_iteration(store, store.update(task['id'], context_version=1))
+    assert 'diagnostic_proposal' not in task['task_memory']
+
+
+def test_memory_read_preserves_ranges_symbols_and_checkpoint_not_full_file(tmp_path):
+    store, _, task = make(tmp_path)
+    task = initialize_memory(store, task)
+    product = Path(task['workspace']) / 'export.py'
+    product.write_text('def export_csv():\n    return 1\n', encoding='utf-8')
+    record_file(store, task, product, 'read', output='<content>\n10: def export_csv():\n11: secret body\n</content>')
+    task = remember_iteration(store, task)
+    entry = task['task_memory']['inspected_files'][0]
+    assert entry['observed_ranges'] == [[10, 11]]
+    assert entry['sha256'] and entry['excerpt'] == '10: def export_csv():'
+    assert 'secret body' not in memory_prompt(task)
+    record_file(store, task, product, 'read', output='<content>\n20: def export_xlsx():\n21: pass\n</content>')
+    task = remember_iteration(store, task)
+    assert task['task_memory']['inspected_files'][0]['observed_ranges'] == [[10, 11], [20, 21]]
+    product.write_text('changed', encoding='utf-8')
+    record_file(store, task, product, 'read', output='<content>\n1: changed\n</content>')
+    task = remember_iteration(store, task)
+    assert task['task_memory']['inspected_files'][0]['observed_ranges'] == [[1, 1]]
+    assert not task['task_memory']['checks'] and not task['task_memory']['changed_files']
+
+
+def test_read_excerpts_redact_secrets_and_skip_sensitive_files(tmp_path):
+    store, _, task = make(tmp_path)
+    task = initialize_memory(store, task)
+    for name in ('settings.py', '.env', 'credentials.json', 'MEMORY.md'):
+        path = Path(task['workspace']) / name
+        path.write_text('password="dont-repeat"', encoding='utf-8')
+        record_file(store, task, path, 'read', output='1: password="dont-repeat"\n2: unrelated prose')
+    task = remember_iteration(store, task)
+    assert 'dont-repeat' not in memory_prompt(task)
+    files = {entry['path']: entry for entry in task['task_memory']['inspected_files']}
+    assert '[redacted]' in files['settings.py']['excerpt']
+    assert all('excerpt' not in files[name] for name in ('.env', 'credentials.json', 'MEMORY.md'))
+
+
+def test_native_reader_line_cap_cannot_hide_current_action_or_diagnosis(tmp_path):
+    from agentvisor.progress_plan import initialize
+    from agentvisor.tasks import document_path
+    store, _, task = make(tmp_path)
+    write_document(task, 'PROGRESS.md', '- [ ] ' + 'Export ' + '\\' * 1900 + '\n')
+    task = initialize_memory(store, initialize(store, task))
+    task = store.update(task['id'], iteration=133, active_role={'name': 'diagnostician'})
+    identity = task['progress_plan']['steps'][0]['id']
+    notes = ('goal_version: 1\niteration: 133\ncontext_version: 0\nreview_revision: 0\n'
+             f'current_step_id: {identity}\n' + 'Check export paths. ' * 90)
+    write_document(task, 'MEMORY.md', notes)
+    record_file(store, task, document_path(task, 'MEMORY.md'))
+    task = remember_iteration(store, task)
+    prompt = memory_prompt(task)
+    assert max(map(len, prompt.splitlines())) < 2000
+    # Replay the actual native reader's 2,000-char line cap.
+    replayed = '\n'.join(line[:2000] for line in prompt.splitlines())
+    assert replayed == prompt.rstrip('\n')
+    payload = prompt_payload(task)
+    assert payload['current_step']['id'] == identity
+    assert payload['diagnostic_proposal']['hypothesis'] == notes
+    assert prompt.index('"current_step"') < prompt.index('"observations"')
+    assert prompt.index('"diagnostic_proposal"') < prompt.index('"observations"')
+
+
+def test_recent_lost_report_recovers_only_from_matching_scoped_diagnostic_write(tmp_path):
+    from agentvisor.progress_plan import initialize
+    from agentvisor.tasks import document_path
+    store, _, task = make(tmp_path)
+    write_document(task, 'PROGRESS.md', '- [ ] Export\n')
+    task = initialize_memory(store, initialize(store, task))
+    identity = task['progress_plan']['steps'][0]['id']
+    notes = ('goal_version: 1\niteration: 133\ncontext_version: 0\nreview_revision: 0\n'
+             f'current_step_id: {identity}\nVerify route shadowing and add tests.\n')
+    task = store.update(task['id'], iteration=135, active_role={'name': 'executor'})
+    write_document(task, 'MEMORY.md', notes)
+    store.event(task['id'], 'session_role', '', data={'name': 'diagnostician'})
+    store.event(task['id'], 'tool_finished', 'write', data={
+        'tool': 'write', 'status': 'completed', 'input': {
+            'filePath': str(document_path(task, 'MEMORY.md')), 'content': notes}})
+    store.event(task['id'], 'iteration_finished', '', data={'iteration': 133})
+    # Existing cursor has already passed these events, like the old build.
+    with store.connect() as db:
+        cursor = db.execute('SELECT MAX(id) FROM events').fetchone()[0]
+    memory = dict(task['task_memory'], event_cursor=cursor)
+    task = store.update(task['id'], task_memory=memory)
+    task = remember_iteration(store, task)
+    assert task['task_memory']['diagnostic_proposal']['hypothesis'] == notes
+    assert task['task_memory']['diagnostic_proposal']['iteration'] == 133
+    memory = dict(task['task_memory'])
+    memory.pop('diagnostic_proposal')
+    task = store.update(task['id'], task_memory=memory)
+    write_document(task, 'MEMORY.md', notes + 'Unobserved addition.')
+    task = remember_iteration(store, task)
+    assert 'diagnostic_proposal' not in task['task_memory']
+    # A same-looking old file cannot restore the report outside its age bound.
+    write_document(task, 'MEMORY.md', notes)
+    task = remember_iteration(store, store.update(task['id'], iteration=142))
+    assert 'diagnostic_proposal' not in task['task_memory']
+
+
+def test_later_write_removes_earlier_read_excerpt_of_same_file(tmp_path):
+    store, _, task = make(tmp_path)
+    task = initialize_memory(store, task)
+    path = Path(task['workspace']) / 'export.py'
+    path.write_text('def old(): pass', encoding='utf-8')
+    record_file(store, task, path, 'read', output='1: def old(): pass')
+    record_file(store, task, path)
+    task = remember_iteration(store, task)
+    assert not task['task_memory']['inspected_files']
+    assert task['task_memory']['changed_files'][0]['path'] == 'export.py'

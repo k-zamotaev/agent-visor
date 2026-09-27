@@ -683,5 +683,6 @@
   "Действия агента · {0}": "Agent actions · {0}",
   "Выполняется": "Running",
   "Выполнено": "Completed",
-  "Показана часть длинной записи.": "Showing part of a long entry."
+  "Показана часть длинной записи.": "Showing part of a long entry.",
+  "Две диагностические сессии не сохранили отчёт. Прогресс сохранён; подробности в журнале.": "Two diagnostic sessions did not save a report. Progress is preserved; details are in the log."
 }

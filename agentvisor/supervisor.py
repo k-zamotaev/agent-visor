@@ -163,6 +163,10 @@ class Supervisor:
                                      data={'steps': restored})
                 task = initialize_progress(self.store, task)
                 task = initialize_memory(self.store, task)
+                # Reconcile observed state before the next prompt as well as
+                # after execution, including a validated diagnostic lost by an
+                # older build. This does not invent another attempt or verdict.
+                task = remember_iteration(self.store, task)
                 failures = task.get('failure_streak', 0)
                 if task['iteration'] >= task['max_iterations']:
                     self.transition(task_id, 'blocked', 'Достигнут лимит итераций', 'warning')
@@ -261,6 +265,14 @@ class Supervisor:
                         break
                     restore_accepted_claims(task, self.store)
                     task = note_completed_session(self.store, task, result)
+                    continuation = task.get('session_continuation') or {}
+                    missing_report = ('Две диагностические сессии не сохранили отчёт. '
+                                      'Прогресс сохранён; подробности в журнале.')
+                    if (result.get('reason') not in HANDOFFS and role['name'] == 'diagnostician'
+                            and continuation.get('diagnostic_attempts', 0) >= 2
+                            and not continuation.get('diagnosed')):
+                        self.transition(task_id, 'blocked', missing_report, 'warning')
+                        break
                     if result.get('reason') in HANDOFFS:
                         # A session boundary must not uncheck claims, reload the
                         # model, grow its context, or inflate failure_streak.
@@ -268,6 +280,7 @@ class Supervisor:
                         if action == 'blocked':
                             message = ('Начальный контекст не помещается в бюджет модели. Прогресс сохранён.'
                                        if result['reason'] == 'context_blocked' else
+                                       missing_report if (task.get('recovery_context') or {}).get('diagnostic_report_missing') else
                                        'Повторные сессии и диагностика не дали нового результата. Прогресс сохранён; '
                                        'причина и последние проверки записаны в журнале.')
                             self.transition(task_id, 'blocked', message, 'warning')

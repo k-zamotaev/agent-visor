@@ -16,9 +16,20 @@ def setup(tmp_path):
     return store, task
 
 
-def rotate(store, task, reason='context_handoff', role='executor', **extra):
+def save_diagnosis(store, task):
+    memory = copy.deepcopy(task['task_memory'])
+    memory['diagnostic_proposal'] = {'goal_version': task['goal_version'],
+        'context_version': task.get('context_version', 0), 'review_revision': task.get('review_revision', 0),
+        'current_step_id': (memory.get('current_step') or {}).get('id', 'none'),
+        'iteration': task['iteration'], 'event_id': 1, 'hypothesis': 'Check one failed export case.'}
+    return store.update(task['id'], task_memory=memory)
+
+
+def rotate(store, task, reason='context_handoff', role='executor', report=True, **extra):
     task = store.update(task['id'], iteration=task['iteration'] + 1,
                         active_role={'name': role})
+    if role == 'diagnostician' and report:
+        task = save_diagnosis(store, task)
     result = {'reason': reason, 'failed': False, 'exit_code': 1,
               'session_handoff': {'reason': reason, 'evidence': {'input_limit': 48000}}, **extra}
     return continue_session(store, task, result)
@@ -74,6 +85,7 @@ def test_ordinary_diagnostic_return_is_not_repeated_after_next_handoff(tmp_path)
     for _ in range(3):
         task, _ = rotate(store, task)
     task = store.update(task['id'], active_role={'name': 'diagnostician'})
+    task = save_diagnosis(store, task)
     task = note_completed_session(store, task, {'failed': False, 'exit_code': 0})
     assert task['session_continuation']['diagnosed'] is True
     task, action = rotate(store, task)
@@ -195,3 +207,98 @@ def test_searching_test_directories_is_not_a_completed_verification(tmp_path):
         task, action = rotate(store, task)
     assert action == 'diagnose'
     assert task['session_continuation']['without_result'] == 3
+
+
+def test_interrupted_diagnosis_needs_report_and_retries_only_once(tmp_path):
+    store, task = setup(tmp_path)
+    task, _ = rotate(store, task)
+    for _ in range(3):
+        task, _ = rotate(store, task)
+    task, action = rotate(store, task, role='diagnostician', report=False)
+    assert action == 'diagnose'
+    assert task['session_continuation']['diagnosed'] is False
+    assert task['session_continuation']['diagnostic_attempts'] == 1
+    task, action = rotate(store, task, role='diagnostician', report=False)
+    assert action == 'blocked'
+    assert task['session_continuation']['diagnosed'] is False
+    assert task['recovery_context']['diagnostic_report_missing'] is True
+
+
+def test_stale_report_is_not_a_completed_new_diagnostic_attempt(tmp_path):
+    store, task = setup(tmp_path)
+    task = save_diagnosis(store, task)
+    task, _ = rotate(store, task)
+    for _ in range(3):
+        task, _ = rotate(store, task)
+    task, action = rotate(store, task, role='diagnostician', report=False)
+    assert action == 'diagnose'
+    assert task['session_continuation']['diagnosed'] is False
+
+
+def test_ordinary_diagnostic_exit_without_report_counts_failed_delivery(tmp_path):
+    store, task = setup(tmp_path)
+    task, _ = rotate(store, task)
+    for _ in range(3):
+        task, _ = rotate(store, task)
+    task = store.update(task['id'], active_role={'name': 'diagnostician'})
+    task = note_completed_session(store, task, {'failed': False, 'exit_code': 0})
+    assert task['session_continuation']['diagnosed'] is False
+    assert task['session_continuation']['diagnostic_attempts'] == 1
+    assert task['session_continuation']['diagnostic_report_missing'] is True
+
+
+def test_second_diagnostic_report_gets_executor_attempt_before_blocking(tmp_path):
+    store, task = setup(tmp_path)
+    task, _ = rotate(store, task)
+    for _ in range(3):
+        task, _ = rotate(store, task)
+    task, _ = rotate(store, task, role='diagnostician', report=False)
+    task, action = rotate(store, task, role='diagnostician')
+    assert action == 'continue' and task['session_continuation']['diagnosed'] is True
+    assert task['session_continuation']['executor_attempts_after_diagnosis'] == 0
+    task, action = rotate(store, task)
+    assert action == 'blocked'
+
+
+def test_supervisor_blocks_missing_ordinary_diagnostic_report_with_honest_reason(tmp_path, monkeypatch):
+    from test_supervisor import make, finish
+    from agentvisor.task_memory import initialize_memory
+    from agentvisor.recovery import initialize_progress
+    store, engine, task = make(tmp_path, max_iterations=8, autonomous_recovery=True)
+    task = initialize_memory(store, initialize_progress(store, task))
+    store.update(task['id'], session_continuation={
+        'scope': [task['goal_version'], 0, None], 'without_result': 4,
+        'diagnosis_requested': True, 'diagnosed': False, 'diagnostic_attempts': 1, 'seen': []},
+        recovery_context={'goal_version': task['goal_version'], 'repair': True})
+    monkeypatch.setattr('agentvisor.supervisor.execute', lambda *args, **kwargs: {
+        'reason': '', 'failed': False, 'exit_code': 0, 'output_tokens': 0, 'duration': .01})
+    engine.start(task['id'])
+    finish(engine)
+    result = store.get(task['id'])
+    assert result['status'] == 'blocked' and result['iteration'] == 1
+    assert 'не сохранили отчёт' in result['reason']
+    assert result['session_continuation']['diagnosed'] is False
+
+
+def test_legacy_diagnosed_flag_without_report_is_not_success_and_keeps_budget(tmp_path):
+    store, task = setup(tmp_path)
+    task, _ = rotate(store, task)
+    state = dict(task['session_continuation'], without_result=5, diagnosed=True, diagnosis_requested=True)
+    task = store.update(task['id'], session_continuation=state)
+    task, action = rotate(store, task)
+    assert action == 'diagnose'
+    assert task['session_continuation']['without_result'] == 6
+    assert task['session_continuation']['seen'] == state['seen']
+    assert task['session_continuation']['diagnosed'] is False
+
+
+def test_role_retries_missing_report_once_then_returns_to_executor(tmp_path):
+    from agentvisor.session_roles import session_role
+    store, task = setup(tmp_path)
+    task = store.update(task['id'], last_session_role={'name': 'diagnostician', 'goal_version': task['goal_version']},
+        recovery_context={'goal_version': task['goal_version'], 'repair': True},
+        session_continuation={'scope': [task['goal_version'], task.get('context_version', 0), None],
+                              'diagnostic_report_missing': True, 'diagnostic_attempts': 1})
+    assert session_role(task)['name'] == 'diagnostician'
+    task['session_continuation']['diagnostic_attempts'] = 2
+    assert session_role(task)['name'] == 'executor'

@@ -39,7 +39,11 @@ def session_role(task, review=False):
     needs_diagnosis = current_recovery and (
         recovery.get('repair') or (recovery.get('failure_cause') or {}).get('attempts', 0) >= 3)
     after_diagnosis = previous.get('goal_version') == version and previous.get('name') == 'diagnostician'
-    name = 'reviewer' if review else 'diagnostician' if needs_diagnosis and not after_diagnosis else 'executor'
+    continuation = task.get('session_continuation') or {}
+    retry_report = (continuation.get('diagnostic_report_missing') and
+                    continuation.get('diagnostic_attempts') == 1 and
+                    continuation.get('scope', [])[:2] == [version, task.get('context_version', 0)])
+    name = 'reviewer' if review else 'diagnostician' if needs_diagnosis and (not after_diagnosis or retry_report) else 'executor'
     contract = CONTRACTS[name]
     return {
         'name': name, 'goal_version': version, 'purpose': contract['purpose'],
@@ -52,20 +56,17 @@ def session_role(task, review=False):
 def role_prompt(role, relative, goal_version):
     """Give each role a bounded outcome; execution limits remain supervisor-owned."""
     name = role['name']
-    from .progress_tools import PROTOCOL
     shared = (
         f'\nSESSION ROLE: {name}. Use the same loaded model in this sequential session. '
         'Stay within the existing task, iteration and command budgets; do not start another model '
         'or delegate parallel inference. Preserve the current goal, user constraints and permissions. '
         'Use the original goal in the supervisor contract, the current plan tool, and project AGENTS.md. '
         f'TASK DOCUMENT SCOPE: {relative}/ is the authoritative directory for this task. '
-        'Root-level GOAL.md, PROGRESS.md, MEMORY.md, DONE.md and RUN_PROMPT.md may belong '
-        'to unrelated work: do not use them as this task\'s goal, checklist or handoff, and do not '
-        'overwrite them. Resolve bare task-document names under the authoritative directory, '
-        'including after conversation compaction. If a summary or another file conflicts, reread '
-        f'{relative}/GOAL.md and {relative}/PROGRESS.md; do not adopt the unrelated plan. '
+        'Root-level files are unrelated; do not use or overwrite them. The supervisor session '
+        'contract supplies the complete progress protocol on every request. PROGRESS.md is a '
+        f'generated view at {relative}/PROGRESS.md, including after conversation compaction; '
+        'do not adopt the unrelated plan. Change the plan only through the progress tools.\n'
     )
-    shared += PROTOCOL
     if name == 'diagnostician':
         return shared + (
             'Investigate ONE recorded blocker. First inspect the exact failure and previous attempts; '
