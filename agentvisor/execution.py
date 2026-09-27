@@ -194,7 +194,9 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
                         'output': str(state.get('output') or '')[-4000:]})
                 elif event_type in {'text', 'reasoning'}:
                     if event_type != 'reasoning' or not inference or not inference.reasoning_seen:
-                        store.event(task['id'], event_type, part.get('text', '')[:6000])
+                        store.event(task['id'], event_type, part.get('text', ''), data={
+                            'actor': (task.get('active_role') or {}).get('name'),
+                            'iteration': task.get('iteration'), 'part_id': part.get('id')})
                 else:
                     store.event(task['id'], 'agent_event', event_type)
             else:

@@ -4,6 +4,7 @@ import sqlite3
 import time
 import threading
 import uuid
+import re
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -29,6 +30,10 @@ class Store:
                     time REAL NOT NULL, level TEXT NOT NULL, kind TEXT NOT NULL,
                     message TEXT NOT NULL, data TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS event_task ON events(task_id, id);
+                CREATE INDEX IF NOT EXISTS event_task_time ON events(task_id, time, id);
+                CREATE INDEX IF NOT EXISTS event_task_kind ON events(task_id, kind, id);
+                CREATE INDEX IF NOT EXISTS event_request ON events(task_id, json_extract(data, '$.request_id'), kind, id);
+                CREATE INDEX IF NOT EXISTS event_call ON events(task_id, json_extract(data, '$.call_id'), kind, id);
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS progress_revisions (
                     task_id TEXT NOT NULL, revision INTEGER NOT NULL, created REAL NOT NULL,
@@ -84,13 +89,17 @@ class Store:
 
     def event(self, task_id, kind, message, level='info', data=None):
         data = dict(data or {})
+        message = str(message)
+        message_limit = 64000 if kind == 'text' else 6000
+        if kind == 'text' and len(message) > message_limit:
+            data.update(truncated=True, original_chars=len(message))
         if kind not in RAW_EVENTS:
             language = self.get(task_id).get('language', 'ru')
             data['_i18n'] = {'source': str(message), 'language': language}
             message = translate(str(message), language)
         with self.connect() as db:
             db.execute('INSERT INTO events(task_id,time,level,kind,message,data) VALUES(?,?,?,?,?,?)',
-                       (task_id, time.time(), level, kind, str(message)[:6000],
+                       (task_id, time.time(), level, kind, message[:message_limit],
                         json.dumps(data, ensure_ascii=False)))
 
     def change_progress(self, task_id, change, source):
@@ -116,9 +125,12 @@ class Store:
                    data={'revision': revision, 'operation': source, 'steps': len(plan['steps'])})
         return task
 
-    def add_context(self, task_id, text, *, recheck=False, kind='instruction'):
+    def add_context(self, task_id, text, *, recheck=False, kind='instruction', client_message_id=None):
         if kind not in {'instruction', 'reference'}:
             raise ValueError('Choose instruction or reference context')
+        if client_message_id is not None and (
+                not isinstance(client_message_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', client_message_id)):
+            raise ValueError('Invalid client_message_id')
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT body FROM tasks WHERE id=?', (task_id,)).fetchone()
@@ -126,10 +138,20 @@ class Store:
                 raise KeyError(task_id)
             task = json.loads(row['body'])
             additions = task.get('context_additions', [])
+            if client_message_id is not None:
+                previous = next((item for item in additions if item.get('client_message_id') == client_message_id), None)
+                if previous:
+                    if (previous['text'], previous.get('recheck', False), previous.get('kind', 'instruction')) != (
+                            text, recheck, kind):
+                        raise ValueError('client_message_id was already used for a different message')
+                    return task
             if len(additions) >= 40 or sum(len(item['text']) for item in additions) + len(text) > 20000:
                 raise ValueError('Дополнения превысили 20000 символов или 40 записей. Уточните основную цель.')
             version = task.get('context_version', 0) + 1
-            additions.append({'version': version, 'text': text, 'created': time.time(), 'recheck': recheck, 'kind': kind})
+            addition = {'version': version, 'text': text, 'created': time.time(), 'recheck': recheck, 'kind': kind}
+            if client_message_id is not None:
+                addition['client_message_id'] = client_message_id
+            additions.append(addition)
             if recheck:
                 task['review_revision'] = task.get('review_revision', 0) + 1
             task.update(context_additions=additions, context_version=version, updated=time.time())

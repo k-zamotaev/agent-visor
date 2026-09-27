@@ -3,39 +3,74 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f5f7fa">
-  <title>AgentVisor — управление агентскими циклами</title>
+  <meta name="theme-color" content="#f6f7f9">
+  <title>AgentVisor — рабочая область задач</title>
   <link rel="icon" href="/static/logo.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/workspace.css">
   <script type="module" src="/static/app.js"></script>
 </head>
-<body>
+<body class="workspace-app" data-page="overview">
   <a class="skip-link" href="#main">К содержимому</a>
-  <aside class="sidebar">
-    <a href="#overview" class="brand"><img src="/static/logo.svg" width="34" height="32" alt="">AgentVisor</a>
-    <nav aria-label="Основная навигация">
-      <button data-page="overview" class="nav-item active" aria-current="page"><i data-icon="home"></i><span>Обзор</span></button>
-      <button data-page="tasks" class="nav-item"><i data-icon="list"></i><span>Задачи</span><span id="task-count" class="nav-count"></span></button>
+  <button class="sidebar-backdrop" id="sidebar-backdrop" aria-label="Закрыть список задач" hidden></button>
+  <aside class="sidebar" id="task-sidebar" aria-label="Навигация и задачи">
+    <a href="#overview" class="brand"><img src="/static/logo.svg" width="28" height="28" alt="">AgentVisor</a>
+    <div class="sidebar-primary"><button data-page="tasks" class="button new-task-button"><i data-icon="plus"></i>Новая задача</button></div>
+    <label class="sidebar-search"><i data-icon="search"></i><input id="task-search" type="search" placeholder="Найти задачу" aria-label="Найти задачу"></label>
+    <div class="sidebar-section-heading"><h2>Ваши задачи</h2><span id="task-count" class="nav-count"></span></div>
+    <div id="workspace-task-list" class="workspace-task-list" aria-label="Список задач"></div>
+    <nav class="sidebar-nav" aria-label="Основная навигация">
+      <button data-page="overview" class="nav-item active" aria-current="page"><i data-icon="chat"></i><span>Рабочая область</span></button>
+      <button data-page="history" class="nav-item"><i data-icon="clock"></i><span>Журнал работы</span></button>
       <button data-page="models" class="nav-item"><i data-icon="cube"></i><span>Модели</span></button>
-      <button data-page="history" class="nav-item"><i data-icon="clock"></i><span>История</span></button>
       <button data-page="settings" class="nav-item"><i data-icon="settings"></i><span>Настройки</span></button>
     </nav>
     <div class="sidebar-bottom"><div><span class="status-dot" id="connection-dot"></span><strong id="connection-label">Подключение…</strong></div><small id="node-os">Локальная установка</small><span class="version">AgentVisor <span id="app-version">0.1.0</span></span></div>
   </aside>
   <main id="main">
-    <div class="topbar"><div>Рабочая область <span class="slash">/</span> <span id="breadcrumb">Обзор</span></div><div class="topbar-controls"><a id="mode-label" class="mode-label" href="/">Локальное управление</a><label class="language-control"><span>Язык</span><select id="language-picker" aria-label="Язык интерфейса и журнала"><option value="ru">Русский</option><option value="en" lang="en">English</option></select></label></div></div>
+    <div class="topbar"><div class="workspace-location"><button id="sidebar-toggle" class="icon-button" aria-label="Открыть список задач" aria-controls="task-sidebar" aria-expanded="false"><i data-icon="panelLeft"></i></button><span id="breadcrumb">Рабочая область</span></div><div class="topbar-controls"><a id="mode-label" class="mode-label" href="/">Локальное управление</a><label class="language-control"><span>Язык</span><select id="language-picker" aria-label="Язык интерфейса и журнала"><option value="ru">Русский</option><option value="en" lang="en">English</option></select></label></div></div>
     <div id="connection-error" class="notice error" role="alert" hidden></div>
     <header class="page-heading">
-      <div><h1 id="page-title">Обзор выполнения</h1><p id="page-subtitle">Все шаги к цели — в одном месте</p></div>
+      <div class="task-heading"><h1 id="page-title">Рабочая область</h1><p id="page-subtitle">Выберите задачу или создайте новую</p></div>
       <div class="actions" id="overview-actions">
-        <button id="edit-goal" class="button"><i data-icon="edit"></i>Изменить цель</button>
+        <button id="edit-goal" class="icon-button" aria-label="Изменить цель" title="Изменить цель"><i data-icon="edit"></i></button>
         <button id="primary-control" class="button primary"><i data-icon="play"></i><span>Новая задача</span></button>
-        <button id="stop-control" class="button blue"><i data-icon="stop"></i>Остановить</button>
+        <button id="stop-control" class="icon-button" aria-label="Остановить задачу" title="Остановить задачу"><i data-icon="stop"></i></button>
+        <button id="inspector-toggle" class="button inspector-toggle" aria-label="План и сведения" aria-controls="task-inspector" aria-expanded="true"><i data-icon="panelRight"></i><span>План</span></button>
       </div>
     </header>
     <section id="page-overview" class="page">
-      <div id="task-picker-wrap" class="task-picker" hidden><label for="task-picker">Текущая задача</label><select id="task-picker"></select><span id="task-status" class="badge"></span></div>
-      <div id="run-notice" class="notice" hidden></div>
+      <div class="workspace-layout">
+        <section class="conversation-panel" aria-label="Общение с агентом">
+          <div class="conversation-toolbar"><h2>Переписка</h2><span id="task-status"></span><button class="text-button" data-page="history">Журнал работы<i data-icon="arrow"></i></button></div>
+          <div id="run-notice" class="notice" hidden></div>
+          <div id="conversation-scroll" class="conversation-scroll" tabindex="0" aria-label="Сообщения задачи">
+            <button id="conversation-older" class="button load-older" type="button" hidden>Ранние сообщения</button>
+            <div id="conversation-loading" class="conversation-loading" role="status" hidden>Загружаем переписку…</div>
+            <div id="conversation-error" class="notice error" role="alert" hidden><span data-error-text>Не удалось загрузить переписку.</span><button id="conversation-retry" class="text-button" type="button">Повторить</button></div>
+            <div id="conversation-empty" class="conversation-empty"><i data-icon="chat"></i><h2>Задача начинается с разговора</h2><p>Задайте цель, уточняйте требования и следите за результатом в одной переписке.</p><button class="button primary" data-page="tasks">Создать задачу</button></div>
+            <div id="conversation-messages" class="conversation-messages" aria-label="Переписка с агентом"></div>
+          </div>
+          <button id="conversation-latest" class="button jump-latest" type="button" hidden><i data-icon="down"></i>Новые сообщения</button>
+          <div id="conversation-activity" class="conversation-activity" role="status" aria-live="polite"></div>
+          <form id="message-form" class="message-composer">
+            <label class="sr-only" for="message-text">Сообщение агенту</label>
+            <div class="composer-input"><textarea id="message-text" rows="2" maxlength="6000" placeholder="Уточните задачу или добавьте контекст…" aria-describedby="message-help message-error"></textarea></div>
+            <div class="composer-options"><label class="composer-kind"><span class="sr-only">Тип сообщения</span><select id="message-kind" aria-label="Тип сообщения"><option value="instruction">Указание</option><option value="reference">Контекст</option></select></label><details class="composer-advanced"><summary>Параметры</summary><label class="check-label"><input id="message-recheck" type="checkbox"><span>Перепроверить завершённые этапы по новым требованиям</span></label></details><span id="message-count" class="quiet"></span><button id="message-send" class="button primary" type="submit"><i data-icon="send"></i><span>Отправить</span></button></div>
+            <p id="message-error" class="form-error" role="alert" hidden></p>
+            <div class="composer-bottom"><small id="message-help">Enter — отправить · Shift + Enter — новая строка</small></div>
+          </form>
+        </section>
+        <aside id="task-inspector" class="task-inspector" aria-label="План и сведения">
+          <div class="inspector-tabs" role="tablist" aria-label="Сведения о задаче"><button id="tab-plan" role="tab" aria-selected="true" aria-controls="inspector-plan" data-inspector-tab="plan">План</button><button id="tab-details" role="tab" aria-selected="false" aria-controls="inspector-details" data-inspector-tab="details" tabindex="-1">Сведения</button></div>
+          <div id="inspector-plan" class="inspector-content" role="tabpanel" aria-labelledby="tab-plan">
+            <div class="inspector-current"><span>Текущий этап</span><strong id="current-step-name">План появится после запуска</strong><button id="show-current-step" class="text-button">Перейти к этапу</button></div>
+        <section class="panel plan-panel"><div class="panel-heading"><h2>План задачи</h2><div class="plan-summary"><span id="plan-label">Пока нет шагов</span><progress id="plan-progress" max="100" value="0" aria-label="Завершённые шаги"></progress></div><button class="text-button" id="open-progress">PROGRESS.md</button></div><div id="checklist" class="checklist"></div></section>
+
+          </div>
+          <div id="inspector-details" class="inspector-content" role="tabpanel" aria-labelledby="tab-details" hidden>
+            <details class="task-goal" open><summary>Цель задачи</summary><div id="task-goal-content" class="prose"></div></details>
+            <div class="task-documents"><h2>Документы задачи</h2><div id="task-document-links"></div></div>
       <details id="limits-panel" class="context-panel" hidden>
         <summary>Лимиты задачи <span id="limits-summary" class="quiet"></span></summary>
         <form id="limits-form">
@@ -49,19 +84,6 @@
           <div class="form-actions"><button class="button" type="submit" value="save">Сохранить лимиты</button><button id="limits-resume" class="button primary" type="submit" value="resume">Сохранить и продолжить</button></div>
         </form>
       </details>
-      <details id="context-panel" class="context-panel" hidden>
-        <summary>Добавить контекст <span id="context-delivery" class="quiet"></span></summary>
-        <form id="context-form">
-          <label for="context-text">Дополнительные указания для текущей задачи</label>
-          <p id="context-help" class="quiet">Указание должно появиться в плане до продолжения работы. Его выполнение проверяется отдельно.</p>
-          <label for="context-kind">Тип дополнения</label>
-          <select id="context-kind"><option value="instruction">Указание — учесть в плане</option><option value="reference">Справочная информация</option></select>
-          <textarea id="context-text" rows="3" maxlength="6000" required aria-describedby="context-help" placeholder="Например, используйте порт 8015; данные в каталоге samples нужно сохранить."></textarea>
-          <label class="check-label"><input id="context-recheck" type="checkbox"><span>Перепроверить завершённые этапы по новым требованиям</span></label>
-          <button class="button" type="submit">Передать контекст</button>
-          <div id="context-notes" class="context-notes"></div>
-        </form>
-      </details>
       <div class="metrics">
         <article class="metric"><span>Выполнено шагов</span><i data-icon="list"></i><strong id="metric-progress">—</strong><small id="progress-caption">План появится после запуска</small></article>
         <article class="metric"><span>Время работы</span><i data-icon="clock"></i><strong id="metric-time">—</strong><small id="time-caption">Ожидание первой задачи</small></article>
@@ -69,11 +91,11 @@
         <article class="metric"><span>Генерация модели</span><i data-icon="chart"></i><strong id="metric-generation">—</strong><small id="generation-caption">Ожидание ответа модели</small></article>
         <article class="metric"><span>Восстановления</span><i data-icon="refresh"></i><strong id="metric-recovery">—</strong><small id="recovery-caption">История повторных запусков</small></article>
       </div>
-      <div class="dashboard-grid">
         <section class="panel chart-panel"><div class="panel-heading"><h2>Скорость выполнения</h2><select id="chart-metric" aria-label="Метрика графика"><option value="session">Средняя за сессию</option><option value="generation">Генерация модели</option></select></div><div id="speed-chart" class="chart-area"></div><p class="chart-note" id="chart-note">Выходные токены / длительность завершённой итерации</p></section>
         <section class="panel model-panel"><div class="panel-heading"><h2>Модель и оборудование</h2><span id="model-badge" class="badge neutral">Не загружена</span></div><h3 id="model-name">Выберите модель</h3><p class="quiet" id="model-runtime">LM Studio или Ollama</p><p class="context-line"><i data-icon="file"></i><span id="context-status">Контекст ещё не создан</span></p><p id="runtime-health" class="runtime-health" role="status" hidden></p><p class="hardware-line"><i data-icon="chip"></i><span id="gpu-name">Определение оборудования…</span></p><div class="resource"><span>VRAM</span><meter id="vram-meter" min="0" max="100" value="0" aria-label="Использование видеопамяти"></meter><span id="vram-value">—</span></div><div class="resource"><span>RAM</span><meter id="ram-meter" min="0" max="100" value="0" aria-label="Использование оперативной памяти"></meter><span id="ram-value">—</span></div><button class="button blue full" data-page="models"><i data-icon="settings"></i>Настройки запуска</button></section>
-        <section class="panel plan-panel"><div class="panel-heading"><h2>План задачи</h2><div class="plan-summary"><span id="plan-label">Пока нет шагов</span><progress id="plan-progress" max="100" value="0" aria-label="Завершённые шаги"></progress></div><button class="text-button" id="open-progress">PROGRESS.md</button></div><div id="checklist" class="checklist"></div></section>
-        <section class="panel events-panel"><div class="panel-heading"><h2>Последние события</h2></div><div id="recent-events"></div><button class="text-button event-link" data-page="history">Открыть журнал <i data-icon="arrow"></i></button></section>
+
+          </div>
+        </aside>
       </div>
     </section>
     <section id="page-tasks" class="page" hidden></section>

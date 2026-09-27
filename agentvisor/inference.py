@@ -427,4 +427,6 @@ class InferenceGateway:
             text, metrics.reasoning = metrics.reasoning[:5000], metrics.reasoning[5000:]
             self.reasoning_seen = True
             self.store.event(self.task['id'], 'reasoning', text, data={
-                'source': 'model_stream', 'request_id': request_id})
+                'source': 'model_stream', 'request_id': request_id,
+                'actor': (self.task.get('active_role') or {}).get('name'),
+                'iteration': self.task.get('iteration')})

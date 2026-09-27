@@ -6,6 +6,11 @@ export const gigabytes = value => number(value / 1024 ** 3);
 export const time = value => new Date(value * 1000).toLocaleTimeString(locale(), {hour12:false});
 export const duration = seconds => seconds < 60 ? tr`${Math.floor(seconds)} с` : seconds < 3600 ? tr`${Math.floor(seconds / 60)} мин` : tr`${Math.floor(seconds / 3600)} ч ${Math.floor(seconds % 3600 / 60)} мин`;
 const paths = {
+ chat:'M21 15a3 3 0 0 1-3 3H8l-5 3V6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3zM7 8h10M7 12h6',
+ send:'M12 20V4m-7 7 7-7 7 7', down:'M12 4v16m-7-7 7 7 7-7',
+ copy:'M8 8h12v13H8zM16 8V3H3v13h5',
+ panelLeft:'M3 4h18v16H3zM9 4v16', panelRight:'M3 4h18v16H3zM15 4v16',
+ chevron:'m9 5 7 7-7 7',
  home:'m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z',
  list:'M9 6h12M9 12h12M9 18h12M3 5l1 1 2-2M3 11l1 1 2-2M3 17l1 1 2-2',
  cube:'m12 3 9 5v9l-9 5-9-5V8zm0 10v9M3 8l9 5 9-5M8 5l9 5',

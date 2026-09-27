@@ -50,6 +50,7 @@ class TaskContext(BaseModel):
     text: str = Field(min_length=1, max_length=6000)
     recheck: bool = False
     kind: Literal['instruction', 'reference'] = 'instruction'
+    client_message_id: str | None = Field(default=None, min_length=1, max_length=100, pattern=r'^[A-Za-z0-9_-]+$')
 
     @field_validator('text')
     @classmethod
@@ -221,9 +222,17 @@ def create_app(data_dir=None):
     def add_context(task_id: str, body: TaskContext, request: Request):
         with app.state.engine.lock:
             current = store.get(task_id)
-            if current['status'] in {'succeeded', 'completed_unverified'}:
+            duplicate = body.client_message_id is not None and any(
+                item.get('client_message_id') == body.client_message_id for item in current.get('context_additions', []))
+            if current['status'] in {'succeeded', 'completed_unverified'} and not duplicate:
                 raise ValueError('Завершённая задача неизменна. Создайте новую задачу.')
-            return task_view(store.add_context(task_id, body.text, recheck=body.recheck, kind=body.kind), language(request))
+            return task_view(store.add_context(task_id, body.text, recheck=body.recheck, kind=body.kind,
+                                               client_message_id=body.client_message_id), language(request))
+
+    @app.get('/api/tasks/{task_id}/conversation')
+    def task_conversation(task_id: str, request: Request, before: str | None = None, limit: int = 60):
+        from .conversation import conversation
+        return conversation(store, task_id, before=before, limit=limit, language=language(request))
 
     @app.post('/api/tasks/{task_id}/{action}')
     def control(task_id: str, action: str, request: Request):
@@ -242,6 +251,11 @@ def create_app(data_dir=None):
             raise ValueError('Сгруппированный журнал загружается целиком без параметра after')
         rows = store.event_groups(task_id) if grouped else store.events(task_id, max(0, after))
         return [event_view(event, language(request)) for event in rows]
+
+    @app.get('/api/tasks/{task_id}/events/{event_id}')
+    def task_event(task_id: str, event_id: int, request: Request):
+        from .conversation import event_detail
+        return event_detail(store, task_id, event_id, language=language(request))
 
     @app.get('/api/profile')
     def profile():
