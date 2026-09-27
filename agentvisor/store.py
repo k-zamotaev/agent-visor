@@ -116,7 +116,9 @@ class Store:
                    data={'revision': revision, 'operation': source, 'steps': len(plan['steps'])})
         return task
 
-    def add_context(self, task_id, text, *, recheck=False):
+    def add_context(self, task_id, text, *, recheck=False, kind='instruction'):
+        if kind not in {'instruction', 'reference'}:
+            raise ValueError('Choose instruction or reference context')
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT body FROM tasks WHERE id=?', (task_id,)).fetchone()
@@ -127,13 +129,15 @@ class Store:
             if len(additions) >= 40 or sum(len(item['text']) for item in additions) + len(text) > 20000:
                 raise ValueError('Дополнения превысили 20000 символов или 40 записей. Уточните основную цель.')
             version = task.get('context_version', 0) + 1
-            additions.append({'version': version, 'text': text, 'created': time.time(), 'recheck': recheck})
+            additions.append({'version': version, 'text': text, 'created': time.time(), 'recheck': recheck, 'kind': kind})
             if recheck:
                 task['review_revision'] = task.get('review_revision', 0) + 1
             task.update(context_additions=additions, context_version=version, updated=time.time())
             db.execute('UPDATE tasks SET body=?, updated=? WHERE id=?',
                        (json.dumps(task, ensure_ascii=False), task['updated'], task_id))
-        self.event(task_id, 'context_added', 'Дополнение сохранено и ожидает передачи модели', data={'version': version})
+        message = ('Указание сохранено и ожидает внесения в план' if kind == 'instruction' else
+                   'Дополнение сохранено и ожидает передачи модели')
+        self.event(task_id, 'context_added', message, data={'version': version, 'kind': kind})
         return task
 
     def mark_context_delivered(self, task_id, version):

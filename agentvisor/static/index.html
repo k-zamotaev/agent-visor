@@ -53,7 +53,9 @@
         <summary>Добавить контекст <span id="context-delivery" class="quiet"></span></summary>
         <form id="context-form">
           <label for="context-text">Дополнительные указания для текущей задачи</label>
-          <p id="context-help" class="quiet">Необязательно. Агент продолжает работать самостоятельно. Дополнение будет передано при следующем обращении к модели.</p>
+          <p id="context-help" class="quiet">Указание должно появиться в плане до продолжения работы. Его выполнение проверяется отдельно.</p>
+          <label for="context-kind">Тип дополнения</label>
+          <select id="context-kind"><option value="instruction">Указание — учесть в плане</option><option value="reference">Справочная информация</option></select>
           <textarea id="context-text" rows="3" maxlength="6000" required aria-describedby="context-help" placeholder="Например, используйте порт 8015; данные в каталоге samples нужно сохранить."></textarea>
           <label class="check-label"><input id="context-recheck" type="checkbox"><span>Перепроверить завершённые этапы по новым требованиям</span></label>
           <button class="button" type="submit">Передать контекст</button>

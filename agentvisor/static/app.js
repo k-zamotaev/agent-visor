@@ -90,10 +90,11 @@ function renderOverview(){
  const contextPanel=$('#context-panel');contextPanel.hidden=!t;
  const contextButton=$('#context-form button');
  contextButton.disabled=!!contextButton.dataset.saving||!t||['succeeded','completed_unverified'].includes(t.status);
- const contextVersion=t?.context_version||0,delivered=t?.applied_context_version||0;
- setText('#context-delivery',contextVersion?(contextVersion>delivered?tr`Дополнение №${contextVersion} ожидает передачи`:tr`Дополнение №${contextVersion} передано модели`):'');
- const notes=$('#context-notes'),notesKey=(t?.id||'')+':'+contextVersion;
- if(notes.dataset.version!==notesKey){notes.innerHTML=(t?.context_additions||[]).slice(-3).map(n=>`<p><strong>№${n.version}</strong> ${esc(n.text)}</p>`).join('');notes.dataset.version=notesKey;}
+ const instructions=t?.user_instructions||[],pendingInstructions=instructions.filter(n=>n.state==='pending').length;
+ setText('#context-delivery',pendingInstructions?tr`Ожидают внесения в план: ${pendingInstructions}`:instructions.some(n=>n.kind==='instruction')?txt('Указания внесены в план; выполнение — в статусах ниже'):'');
+ const labels={pending:txt('Ожидает внесения в план'),planned:txt('В плане · предстоит выполнить'),review_pending:txt('Выполнение ожидает проверки'),verified:txt('Выполнение проверено'),claimed:txt('Заявлено выполнение · без независимой проверки'),queued:txt('Справка ожидает передачи'),delivered:txt('Справка передана')};
+ const notes=$('#context-notes'),notesKey=(t?.id||'')+':'+JSON.stringify(instructions);
+ if(notes.dataset.version!==notesKey){notes.innerHTML=instructions.map(n=>{const steps=(n.step_ids||[]).map(id=>(t?.checklist||[]).findIndex(s=>s.id===id)+1).filter(Boolean);return `<p><strong>№${n.version}</strong><span class="instruction-state">${esc(labels[n.state]||n.state)}${steps.length?' · '+esc(tr`Этапы: ${steps.join(', ')}`):''}</span><br>${esc(n.text)}</p>`;}).join('');notes.dataset.version=notesKey;}
  $('#stop-control').hidden=!t;
  $('#stop-control').disabled=!t||!active.has(t.status);
  const primary=$('#primary-control');
@@ -165,8 +166,8 @@ $('#task-picker').addEventListener('change',e=>selectTask(e.target.value));
 $('#chart-metric').addEventListener('change',e=>{localStorage.setItem('agentvisor-chart-metric',e.target.value);renderOverview();});
 $('#context-form').addEventListener('submit',async event=>{
  event.preventDefault();if(!state.task)return;
- const button=event.submitter,taskId=state.task.id,text=$('#context-text').value;button.dataset.saving='true';button.disabled=true;
- try{await api(`/tasks/${taskId}/context`,{method:'POST',body:JSON.stringify({text,recheck:$('#context-recheck').checked})});if($('#context-text').value===text){$('#context-text').value='';$('#context-recheck').checked=false;}toast(txt('Дополнение сохранено и ожидает передачи модели'));await refresh();}
+ const button=event.submitter,taskId=state.task.id,text=$('#context-text').value,kind=$('#context-kind').value;button.dataset.saving='true';button.disabled=true;
+ try{await api(`/tasks/${taskId}/context`,{method:'POST',body:JSON.stringify({text,kind,recheck:$('#context-recheck').checked})});if($('#context-text').value===text){$('#context-text').value='';$('#context-recheck').checked=false;$('#context-kind').value='instruction';}toast(txt(kind==='instruction'?'Указание сохранено и ожидает внесения в план':'Дополнение сохранено и ожидает передачи модели'));await refresh();}
  catch(error){toast(error.message,true);}finally{delete button.dataset.saving;renderOverview();}
 });
 $('#language-picker').addEventListener('change',async event=>{

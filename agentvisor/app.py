@@ -4,6 +4,7 @@ import threading
 import httpx
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
@@ -48,6 +49,7 @@ class ModelDownload(BaseModel):
 class TaskContext(BaseModel):
     text: str = Field(min_length=1, max_length=6000)
     recheck: bool = False
+    kind: Literal['instruction', 'reference'] = 'instruction'
 
     @field_validator('text')
     @classmethod
@@ -185,8 +187,10 @@ def create_app(data_dir=None):
     @app.get('/api/tasks/{task_id}')
     def task(task_id: str, request: Request):
         from .progress_plan import sync_document
+        from .user_instructions import statuses
         value = task_view(sync_document(store, store.get(task_id)), language(request))
         return dict(value, checklist=checklist(value), done=read_document(value, 'DONE.md'),
+                    user_instructions=statuses(value),
                     metrics=[event_view(event, language(request)) for event in store.metrics(task_id)],
                     documents={name: read_document(value, name) for name in ('GOAL.md', 'PROGRESS.md')})
 
@@ -219,7 +223,7 @@ def create_app(data_dir=None):
             current = store.get(task_id)
             if current['status'] in {'succeeded', 'completed_unverified'}:
                 raise ValueError('Завершённая задача неизменна. Создайте новую задачу.')
-            return task_view(store.add_context(task_id, body.text, recheck=body.recheck), language(request))
+            return task_view(store.add_context(task_id, body.text, recheck=body.recheck, kind=body.kind), language(request))
 
     @app.post('/api/tasks/{task_id}/{action}')
     def control(task_id: str, action: str, request: Request):

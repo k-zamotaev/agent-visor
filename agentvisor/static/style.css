@@ -30,6 +30,7 @@ dialog{border:1px solid var(--line);border-radius:12px;padding:26px;width:min(64
 .context-panel summary{cursor:pointer;font-size:14px;font-weight:600;line-height:1.6}.context-panel summary .quiet{font-size:12px;font-weight:400;margin-left:12px}
 .context-panel form{margin-top:16px;max-width:900px}.context-panel label{display:block;font-size:14px;font-weight:600}.context-panel textarea{width:100%;margin:10px 0 12px}.context-panel .quiet{line-height:1.6}
 .context-notes p{font-size:13px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}.context-notes strong{color:var(--muted);margin-right:8px}
+.context-notes{max-height:360px;overflow-y:auto}.instruction-state{font-weight:600;color:var(--blue,#1765cc)}.context-panel select{margin:8px 0 12px;max-width:100%}
 .reasoning-entry summary{cursor:pointer;font-weight:600;color:var(--ink)}.reasoning-entry pre{font:inherit;font-size:14px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere;max-width:75ch;background:var(--bg);padding:12px;border-radius:6px}
 .events-panel .reasoning-entry pre{max-height:24rem;overflow:auto;font-size:14px;scrollbar-color:var(--muted) var(--bg)}
 .events-panel .reasoning-entry summary{font-size:14px;line-height:1.6}

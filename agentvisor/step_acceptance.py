@@ -19,9 +19,14 @@ def accepted_steps(task):
 
 def claimed_steps(task):
     from .tasks import checklist
-    return [{'id': item.get('id') or step_id(index, item['text']), 'text': item['text'], 'index': index}
-            for index, item in enumerate(checklist(task))
-            if item['done']]
+    from .user_instructions import requirements_for
+    steps = [{'id': item.get('id') or step_id(index, item['text']), 'text': item['text'], 'index': index}
+             for index, item in enumerate(checklist(task)) if item['done']]
+    for step in steps:
+        requirements = requirements_for(task, step['id'])
+        if requirements:
+            step['user_instructions'] = requirements
+    return steps
 
 
 def pending_steps(task):
@@ -75,6 +80,11 @@ def review_prompt(task, review, relative):
         f'Read {relative}/GOAL.md, {relative}/PROGRESS.md, project AGENTS.md '
         'and the relevant changed files. '
         'Check the claimed milestones against the ORIGINAL user goal; reject weakened or missing criteria. '
+        'Also verify every original user_instructions entry attached to the milestone. '
+        'Adding a plan entry or acknowledging a request is not implementing it. '
+        'If an instruction spans related_steps, verify this milestone\'s contribution and user constraints; '
+        'do not demand deliverables assigned to other related steps. The supervisor requires all linked '
+        'milestones to pass before the whole instruction is verified. '
         'Review only the requested milestone: do not require unrelated deliverables assigned to later steps. '
         'Run meaningful fresh checks and inspect their actual results. For UI behavior, use a real '
         'browser when available and required by the goal. A passing build alone does not prove UI behavior. '

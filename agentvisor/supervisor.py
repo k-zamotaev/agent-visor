@@ -351,6 +351,9 @@ class Supervisor:
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
 
     def complete(self, task):
+        from .user_instructions import pending
+        if pending(task):
+            return False
         if task.get('step_acceptance', True) and task['mode'] != 'demo' and pending_steps(task):
             return False
         if task.get('context_version', 0) > task.get('applied_context_version', 0):
@@ -367,6 +370,9 @@ class Supervisor:
             with self.lock:
                 latest = self.store.get(task['id'])
                 if (self.cancel.is_set() or latest['goal_version'] != task['goal_version'] or
+                        pending(latest) or
+                        latest.get('context_version', 0) != task.get('context_version', 0) or
+                        (latest.get('progress_plan') or {}).get('revision') != (task.get('progress_plan') or {}).get('revision') or
                         latest.get('context_version', 0) > latest.get('applied_context_version', 0)):
                     return False
                 message = ('Этапы прошли приёмку. Итоговая проверка всей задачи не настроена.'
@@ -379,6 +385,9 @@ class Supervisor:
         with self.lock:
             latest = self.store.get(task['id'])
             if (self.cancel.is_set() or latest['goal_version'] != task['goal_version'] or
+                    pending(latest) or
+                    latest.get('context_version', 0) != task.get('context_version', 0) or
+                    (latest.get('progress_plan') or {}).get('revision') != (task.get('progress_plan') or {}).get('revision') or
                     latest.get('context_version', 0) > latest.get('applied_context_version', 0)):
                 return False
             self.store.event(task['id'], 'verification_finished', 'Результат независимой проверки',
@@ -391,6 +400,9 @@ class Supervisor:
             return True
 
     def review_steps(self, task, ready, profile):
+        from .user_instructions import pending
+        if pending(task):
+            return  # Let the next working session incorporate the new request first.
         # Review individually so one malformed report cannot invalidate other milestones.
         while pending_steps(task):
             self.review_step(task, ready, profile)

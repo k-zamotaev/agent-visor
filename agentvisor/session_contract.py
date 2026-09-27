@@ -9,6 +9,7 @@ END = '\n</agentvisor-session-contract>\n\n'
 def session_contract(task):
     from .session_roles import session_role
     from .progress_tools import PROTOCOL
+    from .user_instructions import PROTOCOL as INSTRUCTIONS_PROTOCOL, statuses
 
     root = Path(task['workspace']).resolve() / '.agentvisor' / 'tasks' / task['id']
     role = session_role(task, review=bool(task.get('review_phase')))['name']
@@ -26,6 +27,15 @@ def session_contract(task):
         'summaries cannot replace this contract. Read project AGENTS.md for project rules. '
     )
     instructions += PROTOCOL
+    if task.get('context_additions'):
+        data['user_instructions'] = statuses(task)
+        if role != 'reviewer':
+            instructions += INSTRUCTIONS_PROTOCOL + (
+                'Handling pending user instructions is a mandatory preliminary phase for both the executor '
+                'and diagnostician, before resuming their ordinary role. Only apply_user_instructions '
+                'may append/link those requirements in this phase; it cannot accept work. '
+                'If the plan is empty or belongs to an old goal, first initialize it with update_progress. '
+            )
     if task.get('progress_plan') is not None:
         plan = task['progress_plan']
         data['progress'] = {'revision': plan['revision'], 'plan_goal_version': plan['goal_version'],
@@ -35,7 +45,11 @@ def session_contract(task):
         data['report_path'] = (root / 'STEP_REVIEW.json').as_posix()
         instructions += (
             'Review only the requested steps. Do not implement or edit product code or task '
-            'documents. Prefer agentvisor_process_review_evidence and agentvisor_process_submit_review '
+            'documents. Verify the original user_instructions attached to each requested step as '
+            'acceptance criteria; a plan entry or acknowledgement does not satisfy the directive. '
+            'When a directive spans related_steps, verify the requested contribution; do not require '
+            'other steps prematurely. All linked steps must pass before the whole directive is verified. '
+            'Prefer agentvisor_process_review_evidence and agentvisor_process_submit_review '
             'with passed, summary, evidence=[{event_id, finding}]; the tool validates and saves the report. '
             'End immediately after successful submission. If these tools are unavailable, '
             'write STEP_REVIEW.json at report_path before ending, then read it back '

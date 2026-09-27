@@ -18,6 +18,7 @@ PROTOCOL = (
 
 
 def schemas():
+    from .user_instructions import schema
     return [
         {'name': 'get_progress', 'description':
          'Read the authoritative plan with revision, stable step IDs and review status. '
@@ -32,6 +33,7 @@ def schemas():
                        'items': {'type': 'string', 'minLength': 1, 'maxLength': 2000}},
              'step_id': {'type': 'string'}, 'note': {'type': 'string', 'minLength': 1, 'maxLength': 16000}},
              'required': ['goal_version', 'expected_revision', 'operation'], 'additionalProperties': False}},
+        schema(),
     ]
 
 
@@ -44,4 +46,7 @@ def call(store, session, name, arguments):
         if arguments:
             raise ValueError('get_progress takes no arguments')
         return view(sync_document(store, current))
+    if name == 'apply_user_instructions':
+        from .user_instructions import apply
+        return apply(store, session, arguments)
     return change(store, session, arguments)

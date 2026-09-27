@@ -151,4 +151,5 @@ def test_auxiliary_title_cannot_consume_context_or_allow_task_completion(tmp_pat
     delivered = store.get(task['id'])
     assert delivered['applied_context_version'] == delivered['context_version'] == 1
     assert 'Verify the accessibility requirement too.' in requests[2]['body']['messages'][1]['content']
-    assert engine.complete(delivered) is True
+    # HTTP delivery is not implementation of the new user requirement.
+    assert engine.complete(delivered) is False

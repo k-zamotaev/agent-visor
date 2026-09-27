@@ -47,15 +47,17 @@ def items(task):
 
 
 def view(task):
+    from .user_instructions import statuses
     plan = task['progress_plan']
     accepted = accepted_steps(task)
     return {'goal_version': task['goal_version'], 'plan_goal_version': plan['goal_version'],
             'revision': plan['revision'], 'steps': [dict(step, review_status=(
                 'accepted' if step['id'] in accepted else 'pending') if step['done'] else 'open')
-                for step in items(task)], 'notes': plan.get('notes', '')}
+                for step in items(task)], 'notes': plan.get('notes', ''), 'user_instructions': statuses(task)}
 
 
 def render(task):
+    from .user_instructions import statuses
     plan = task['progress_plan']
     lines = ['# Progress', '', f'goal_version: {plan["goal_version"]}',
              f'plan_revision: {plan["revision"]}', '',
@@ -69,6 +71,13 @@ def render(task):
             lines += ['  > ' + line for line in step['note'].splitlines()]
     if plan.get('notes'):
         lines += ['', '## Notes'] + ['> ' + line for line in plan['notes'].splitlines()]
+    instructions = statuses(task)
+    if instructions:
+        lines += ['', '## User instructions and reference context']
+        for item in instructions:
+            lines += [f'### #{item["version"]}: {item["state"]}',
+                      'Steps: ' + (', '.join(item['step_ids']) or '—')]
+            lines += ['> ' + line for line in item['text'].splitlines()]
     if plan.get('imported_document'):
         lines += ['', 'Previous document preserved in progress-history/ and the first database revision.']
     return '\n'.join(lines) + '\n'
@@ -112,7 +121,13 @@ def text(value, limit=2000):
 
 def change(store, session, arguments):
     from .session_roles import session_role
-    if session.get('review_phase') or session_role(session)['name'] != 'executor':
+    from .user_instructions import pending
+    current = store.get(session['id'])
+    plan = current.get('progress_plan') or {}
+    instruction_initialization = (isinstance(arguments, dict) and arguments.get('operation') == 'initialize'
+                                  and pending(current) and
+                                  (not plan.get('steps') or plan.get('goal_version') != current['goal_version']))
+    if session.get('review_phase') or (session_role(session)['name'] != 'executor' and not instruction_initialization):
         raise ValueError('Only the executor may update progress. Use MEMORY.md for diagnostic notes.')
     if not isinstance(arguments, dict):
         raise ValueError('Progress arguments must be an object')
@@ -137,9 +152,11 @@ def change(store, session, arguments):
         if operation == 'initialize':
             if plan['goal_version'] == current['goal_version'] and plan['steps']:
                 raise ValueError('Plan already exists. You may append steps, not replace it.')
-            plan = dict(plan, goal_version=current['goal_version'], steps=[], notes='')
+            plan = dict(plan, goal_version=current['goal_version'], steps=[], notes='', context_links={})
         elif plan['goal_version'] != current['goal_version']:
             raise ValueError('Initialize a plan for the new goal version first.')
+        elif pending(current):
+            raise ValueError('Apply pending user instructions with apply_user_instructions before ordinary progress updates')
         if operation in {'initialize', 'append'}:
             values = arguments['steps']
             if not isinstance(values, list) or not 1 <= len(values) <= 100 or len(plan['steps']) + len(values) > 200:

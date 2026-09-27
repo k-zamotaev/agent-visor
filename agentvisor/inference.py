@@ -214,9 +214,10 @@ class InferenceGateway:
             if task.get('progress_plan') is not None:
                 from .progress_plan import sync_document
                 task = sync_document(self.store, task)
-                contract = session_contract(dict(self.task, progress_plan=task['progress_plan']))
-            else:
-                contract = self.session_contract
+            # Keep the session's goal/role pinned, but refresh directives and plan
+            # from the store on every request, including after client compaction.
+            contract = session_contract(dict(self.task, **{key: task[key] for key in (
+                'progress_plan', 'context_additions', 'applied_context_version', 'step_reviews') if key in task}))
             apply_session_contract(body, contract)
         effort = self.task.get('active_effort') or {}
         ceiling = effort.get('output_limit')
@@ -231,6 +232,8 @@ class InferenceGateway:
         version = task.get('context_version', 0) if body.get('tools') else 0
         if version:
             apply_task_context(body, additions)
+        from .user_instructions import gate_request
+        gate_request(body, task, reviewer=bool(self.task.get('review_phase')))
         if body.get('stream'):
             body['stream_options'] = dict(body.get('stream_options') or {}, include_usage=True)
         headers = {'Content-Type': 'application/json'}

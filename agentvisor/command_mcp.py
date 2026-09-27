@@ -106,7 +106,7 @@ class CommandMCP:
         if self.cancel.is_set():
             raise ValueError('Task cancelled')
         with self.lock:
-            if name in {'get_progress', 'update_progress'}:
+            if name in {'get_progress', 'update_progress', 'apply_user_instructions'}:
                 from .progress_tools import call
                 return call(self.store, self.task, name, arguments)
             if name in {'review_evidence', 'submit_review'}:
@@ -117,6 +117,10 @@ class CommandMCP:
                     self.review_submitted = True
                 return result
             if name == 'exec':
+                from .user_instructions import pending
+                current = self.store.get(self.task['id'])
+                if not self.task.get('review_phase') and current.get('progress_plan') is not None and pending(current):
+                    raise ValueError('Apply pending user instructions with apply_user_instructions before starting commands')
                 cwd = Path(arguments.get('cwd') or self.task['workspace'])
                 if not cwd.is_absolute():
                     cwd = Path(self.task['workspace']) / cwd

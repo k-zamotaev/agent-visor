@@ -175,7 +175,8 @@ def prepare_documents(task, ready, review=None):
             permission = 'ask'
         config['permission'] = {'bash': 'deny', 'agentvisor_process_exec': permission,
                                 'agentvisor_process_get_progress': 'allow',
-                                'agentvisor_process_update_progress': 'allow'}
+                                'agentvisor_process_update_progress': 'allow',
+                                'agentvisor_process_apply_user_instructions': 'allow'}
         if review:
             config['permission'].update(agentvisor_process_review_evidence='allow',
                                         agentvisor_process_submit_review='allow')
