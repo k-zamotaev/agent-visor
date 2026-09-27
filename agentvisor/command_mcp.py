@@ -13,6 +13,12 @@ from .process_wait import wait_any
 def schemas():
     process = {'process_id': {'type': 'string'}, 'yield_ms': {'type': 'integer', 'minimum': 0, 'maximum': 1000}}
     return [
+        {'name': 'select_toolset', 'description':
+         'Activate one connected optional toolset by its exact catalogue name. '
+         'Its tools become available on the next model request. Use none to return to core tools. '
+         'This changes schema visibility only, never permissions.',
+         'inputSchema': {'type': 'object', 'properties': {'name': {'type': 'string'}},
+                         'required': ['name'], 'additionalProperties': False}},
         {'name': 'exec', 'description':
          'Execute a command with a native shell and independent deadline. Returns within 1 second. '
          'If status=running use poll with process_id; do not start duplicates. '
@@ -51,6 +57,8 @@ class CommandMCP:
         self.lock = threading.RLock()
         self.commands, self.recorded = {}, set()
         self.review_submitted = False
+        self.progress = None
+        self.select_toolset = None
 
     def close(self):
         try:
@@ -72,12 +80,22 @@ class CommandMCP:
         memory = self.store.get(self.task['id']).get('command_failures') or {}
         return memory.get('items', []) if memory.get('goal_version') == self.task['goal_version'] else []
 
+    def has_running_foreground(self):
+        with self.lock:
+            results = self.runner.snapshots()
+            for result in results:
+                self.record(result)
+            return any(item['status'] == 'running' and not item.get('background') for item in results)
+
     def record(self, result):
         key = result.get('process_id')
         if key not in self.commands or key in self.recorded or result.get('status') == 'running':
             return
         self.recorded.add(key)
         command = self.commands[key]
+        if self.progress is not None:
+            self.progress.command_result(key, command['command'], status=result.get('status'),
+                                         exit_code=result.get('exit_code'), cwd=command['cwd'])
         failed = result.get('status') not in {'stopped', 'cancelled'} and (
             result.get('status') in {'timed_out', 'output_limit', 'failed'} or bool(result.get('exit_code')))
         self.store.event(self.task['id'], 'command_finished', command['command'],
@@ -106,6 +124,10 @@ class CommandMCP:
         if self.cancel.is_set():
             raise ValueError('Task cancelled')
         with self.lock:
+            if name == 'select_toolset':
+                if not self.select_toolset:
+                    raise ValueError('Tool catalogue is unavailable')
+                return self.select_toolset(arguments.get('name'))
             if name in {'get_progress', 'update_progress', 'apply_user_instructions'}:
                 from .progress_tools import call
                 return call(self.store, self.task, name, arguments)

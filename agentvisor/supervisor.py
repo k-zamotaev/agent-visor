@@ -26,6 +26,7 @@ from .skill_library import record_skills, skill_prompt
 from .adaptive_effort import session_effort
 from .tasks import checklist, prepare_documents, read_document, state_dir, write_document
 from .progress_plan import initialize as initialize_plan, sync_document as sync_progress
+from .session_continuation import HANDOFFS, continue_session, note_completed_session
 
 
 class VerificationFailure(RuntimeError):
@@ -224,7 +225,7 @@ class Supervisor:
                         task = dict(task, command_policy=policy)
                         if not policy['allowed']:
                             self.store.event(task_id, 'command_policy', policy['reason'], 'warning')
-                    gateway = (InferenceGateway(self.store, task, profile, self.cancel)
+                    gateway = (InferenceGateway(self.store, task, dict(profile, context=ready['context']), self.cancel)
                                if task['mode'] == 'opencode' and not self.command_builder else nullcontext())
                     with gateway as inference:
                         if inference:
@@ -259,6 +260,24 @@ class Supervisor:
                     if self.cancel.is_set():
                         break
                     restore_accepted_claims(task, self.store)
+                    task = note_completed_session(self.store, task, result)
+                    if result.get('reason') in HANDOFFS:
+                        # A session boundary must not uncheck claims, reload the
+                        # model, grow its context, or inflate failure_streak.
+                        task, action = continue_session(self.store, task, result)
+                        if action == 'blocked':
+                            message = ('Начальный контекст не помещается в бюджет модели. Прогресс сохранён.'
+                                       if result['reason'] == 'context_blocked' else
+                                       'Повторные сессии и диагностика не дали нового результата. Прогресс сохранён; '
+                                       'причина и последние проверки записаны в журнале.')
+                            self.transition(task_id, 'blocked', message, 'warning')
+                            break
+                        if role['name'] == 'executor' and pending_steps(task) and task.get('step_acceptance', True):
+                            self.review_steps(task, ready, profile)
+                        if role['name'] == 'executor' and self.complete(self.store.get(task_id)):
+                            break
+                        self.store.event(task_id, 'next_iteration', 'Контекст сохранён; подготовка следующей сессии')
+                        continue
                     if role['name'] == 'diagnostician' and task['goal_version'] == claim_goal_version:
                         mark_steps(task, [s for s in claimed_steps(task) if s['id'] not in prior_claims], False, self.store)
                     if result['failed']:
@@ -445,7 +464,7 @@ class Supervisor:
                     review_inspection_seconds=inspection_budget, timeout_seconds=review_budget)
         if task['mode'] == 'opencode' and not self.command_builder:
             task['command_policy'] = resolve_command_policy(task, self.cancel)
-        gateway = (InferenceGateway(self.store, task, profile, self.cancel)
+        gateway = (InferenceGateway(self.store, task, dict(profile, context=ready['context']), self.cancel)
                    if task['mode'] == 'opencode' and not self.command_builder else nullcontext())
         ready = {key: value for key, value in ready.items() if key not in {'api_base_url', 'command_mcp_url'}}
         with gateway as inference:

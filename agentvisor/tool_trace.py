@@ -5,6 +5,8 @@ import threading
 import time
 from copy import deepcopy
 
+from .session_progress import SessionProgress
+
 
 def fingerprint(tool, arguments):
     return hashlib.sha256(json.dumps([tool, arguments], sort_keys=True,
@@ -18,6 +20,10 @@ def bounded_input(arguments):
     result = {'preview': serialized[:4000], 'truncated': True}
     if isinstance(arguments, dict) and isinstance(arguments.get('timeout'), (int, float)):
         result['timeout'] = arguments['timeout']
+    if isinstance(arguments, dict):
+        for name in ('filePath', 'path', 'operation'):
+            if isinstance(arguments.get(name), str):
+                result[name] = arguments[name][:1000]
     return result
 
 
@@ -28,6 +34,7 @@ class ToolTrace:
         self.observed_results = {}
         self.failures = []
         self.lock = threading.RLock()
+        self.progress = SessionProgress()
 
     def start(self, call_id, tool, arguments):
         if not call_id:
@@ -38,6 +45,7 @@ class ToolTrace:
             entry = {'call_id': call_id, 'tool': tool, 'input': bounded_input(arguments),
                      'status': 'pending', 'started': time.time()}
             self.pending[call_id] = entry
+            self.progress.start(call_id, tool, arguments)
             self.store.event(self.task['id'], 'tool_started', tool, data=entry)
 
     def finish(self, call_id, output='', error='', status='completed', arguments=None, tool='', inferred=False,
@@ -50,8 +58,18 @@ class ToolTrace:
             entry = self.pending.pop(call_id, None) or self.observed_results.pop(call_id, None)
             if entry is None:
                 entry = {'call_id': call_id, 'tool': tool, 'input': bounded_input(arguments or {})}
+            if not inferred and isinstance(arguments, dict) and arguments:
+                # A pending CLI part can carry empty/partial input. Its final
+                # arguments identify the actual path and operation for memory.
+                entry['input'] = bounded_input(arguments)
             entry.update(status=status, output=str(output)[-4000:], error=str(error)[-2000:],
                          inferred=inferred, exit_code=exit_code)
+            # CLI completion can win the race with the gateway's stream flush,
+            # or be the only event emitted by the client. Count its full input
+            # before truncation; start() deduplicates already observed calls.
+            self.progress.start(call_id, entry['tool'], arguments or entry['input'],
+                                authoritative=not inferred and isinstance(arguments, dict) and bool(arguments))
+            self.progress.finish(call_id, output, error, status, exit_code=exit_code, inferred=inferred)
             self.finished.add(call_id)
             if inferred:
                 # A next model request can arrive before the CLI emits exit/error
@@ -87,7 +105,8 @@ class ToolTrace:
     def snapshot(self):
         with self.lock:
             return deepcopy({'pending_tools': list(self.pending.values())[-8:],
-                             'tool_failures': list(self.failures)})
+                             'tool_failures': list(self.failures),
+                             'session_progress': self.progress.snapshot()})
 
     def problem(self):
         # A deadline belongs to the operation, not to unrelated model tokens.

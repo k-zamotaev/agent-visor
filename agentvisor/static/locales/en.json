@@ -590,5 +590,10 @@
   "Отчёт приёмки сохранён": "Milestone review report saved",
   "Сдача итогового отчёта по собранным доказательствам": "Submitting the final review from collected evidence",
   "Восстановлены отметки принятых этапов": "Accepted milestone checkmarks restored",
-  "Рецензент трижды не сдал корректный отчёт. Прогресс сохранён. {0}": "The reviewer failed to submit a valid report three times. Progress is preserved. {0}"
+  "Рецензент трижды не сдал корректный отчёт. Прогресс сохранён. {0}": "The reviewer failed to submit a valid report three times. Progress is preserved. {0}",
+  "Начальный контекст не помещается в бюджет модели. Прогресс сохранён.": "The initial context exceeds the model budget. Progress is preserved.",
+  "Повторяется исследование без результата. Сохраняется состояние для смены подхода.": "Investigation is repeating without a result. Saving state to change approach.",
+  "Достигнут безопасный предел контекста. Сохраняется состояние для новой сессии.": "The safe context limit has been reached. Saving state for a new session.",
+  "Состояние сессии сохранено; продолжение учитывает предыдущие результаты.": "Session state saved; continuation uses previous results.",
+  "Повторные сессии и диагностика не дали нового результата. Прогресс сохранён; причина и последние проверки записаны в журнале.": "Repeated sessions and diagnosis produced no new result. Progress is preserved; the cause and latest checks are recorded in the log."
 }

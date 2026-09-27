@@ -183,6 +183,8 @@ def finalize(store, task, gateway, model, cancel, result, deadline):
     gateway.close_requests()
     gateway.commands.close()
     gateway.commands.snapshot()
+    if hasattr(gateway, 'begin_finalization'):
+        gateway.begin_finalization()
     try:
         used = asyncio.run(_finish(store, task, gateway, model, cancel, deadline))
         return dict(result, failed=False, reason='review_submitted', error_detail='',

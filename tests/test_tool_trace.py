@@ -107,6 +107,29 @@ def test_cli_failure_can_enrich_result_observed_first_in_model_request():
     assert failures[0]['input'] == {'command': 'npm test'}
 
 
+def test_authoritative_completion_before_gateway_start_preserves_product_edit():
+    trace, _ = trace_for()
+    arguments = {'filePath': 'exporter.py', 'content': 'x' * 10000}
+    trace.observe_event({'callID': 'write-first', 'tool': 'write', 'state': {
+        'status': 'completed', 'input': arguments, 'output': 'Wrote file successfully.'}})
+    trace.start('write-first', 'write', arguments)
+    assert trace.snapshot()['session_progress']['new_progress_count'] == 1
+    assert trace.snapshot()['pending_tools'] == []
+    trace.observe_event({'callID': 'write-first', 'tool': 'write', 'state': {
+        'status': 'completed', 'input': arguments, 'output': 'Wrote file successfully.'}})
+    assert trace.snapshot()['session_progress']['new_progress_count'] == 1
+
+
+def test_completion_only_reads_still_count_as_investigation():
+    trace, _ = trace_for()
+    for index in range(25):
+        trace.observe_event({'callID': str(index), 'tool': 'read', 'state': {
+            'status': 'completed', 'input': {'filePath': 'exporter.py'}, 'output': 'same'}})
+    progress = trace.snapshot()['session_progress']
+    assert progress['operations'] == 25
+    assert progress['new_progress_count'] == 0
+
+
 def test_deadline_reports_pending_command_instead_of_previous_write(monkeypatch):
     trace, _ = trace_for(idle_timeout_seconds=30)
     monkeypatch.setattr('agentvisor.tool_trace.time.time', lambda: 100)
@@ -149,3 +172,39 @@ def test_snapshot_bounds_large_arguments_and_failed_output(monkeypatch):
     monkeypatch.setattr('agentvisor.tool_trace.time.time', lambda: 1000)
     problem = trace.problem()
     assert problem and 'write' in problem and len(problem) <= 1700
+
+
+def test_empty_pending_write_is_enriched_before_authoritative_completion():
+    trace, store = trace_for()
+    trace.observe_event({'callID': 'write', 'tool': 'write', 'state': {'status': 'pending', 'input': {}}})
+    arguments = {'filePath': 'export.py', 'content': 'def export(): return "csv"'}
+    completed = {'callID': 'write', 'tool': 'write', 'state': {
+        'status': 'completed', 'input': arguments, 'output': 'File written'}}
+    trace.observe_event(completed)
+    trace.start('write', 'write', arguments)  # Gateway stream publishes after the CLI.
+    trace.observe_event(completed)
+    assert trace.snapshot()['session_progress']['new_progress_count'] == 1
+    finished = [event for event in store.events if event['kind'] == 'tool_finished']
+    assert len(finished) == 1
+    assert finished[0]['data']['input'] == arguments
+    assert trace.snapshot()['pending_tools'] == []
+
+
+def test_partial_read_then_inferred_result_gets_actual_range_without_double_counting():
+    from agentvisor.session_progress import SessionProgress
+
+    trace, store = trace_for()
+    clock = [0]
+    trace.progress = SessionProgress(clock=lambda: clock[0])
+    for index in range(24):
+        identity = f'read-{index}'
+        trace.observe_event({'callID': identity, 'tool': 'read', 'state': {
+            'status': 'pending', 'input': {'filePath': 'large.py'}}})
+        trace.observe_messages([{'role': 'tool', 'tool_call_id': identity, 'content': 'same lines'}])
+        trace.observe_event({'callID': identity, 'tool': 'read', 'state': {
+            'status': 'completed', 'input': {'filePath': 'large.py', 'offset': index * 100, 'limit': 100},
+            'output': 'same lines'}})
+    clock[0] = 181
+    assert trace.progress.snapshot()['operations'] == 24
+    assert trace.progress.problem() is None
+    assert store.events[-1]['data']['input']['offset'] == 2300

@@ -1,6 +1,7 @@
 """Observe only this task's inference stream and deliver optional user context."""
 import asyncio
 import json
+import re
 import secrets
 import threading
 import time
@@ -11,6 +12,8 @@ import httpx
 from .command_mcp import CommandMCP
 from .tool_trace import ToolTrace
 from .session_contract import apply_session_contract, session_contract
+from .context_budget import ContextBudget
+from .tool_catalog import ToolCatalog
 
 
 CONTEXT_START = '<agentvisor-task-context>\n'
@@ -62,6 +65,7 @@ class StreamMetrics:
         self.first = self.last = None
         self.tokens = None
         self.native_rate = None
+        self.prompt_tokens = None
         self.reasoning = ''
         self.tool_calls = {}
 
@@ -84,6 +88,8 @@ class StreamMetrics:
                 self.last = now
                 active = True
         usage = payload.get('usage') or {}
+        if type(usage.get('prompt_tokens')) is int and usage['prompt_tokens'] > 0:
+            self.prompt_tokens = usage['prompt_tokens']
         if isinstance(usage.get('completion_tokens'), int):
             self.tokens = usage['completion_tokens']
         rate = (payload.get('stats') or {}).get('tokens_per_second')
@@ -114,6 +120,17 @@ class InferenceGateway:
         self.lock = threading.Lock()
         self.trace = ToolTrace(store, task)
         self.commands = CommandMCP(store, task, cancel)
+        self.commands.progress = self.trace.progress
+        self.tool_catalog = ToolCatalog()
+        self.commands.select_toolset = self.tool_catalog.select
+        self.context_budget = ContextBudget(profile.get('context'), profile.get('output_limit', 4096))
+        self.budget_identity = [profile.get('runtime'), profile.get('base_url'), profile.get('model'),
+                                profile.get('context')]
+        calibration = task.get('context_calibration') or {}
+        if calibration.get('identity') == self.budget_identity:
+            self.context_budget.restore_calibration(calibration.get('calibration'))
+        self.session_stop = None
+        self.finalizing = False
         self.inference_error = ''
         gateway = self
         route = '/' + secrets.token_urlsafe(24) + '/v1'
@@ -207,6 +224,62 @@ class InferenceGateway:
     def activity(self):
         return self.last_activity
 
+    def request_handoff(self, reason, evidence, *, blocked=False):
+        with self.lock:
+            if self.session_stop is not None:
+                return
+            self.session_stop = {'reason': reason, 'blocked': blocked, 'evidence': evidence}
+        message = ('Начальный контекст не помещается в бюджет модели. Прогресс сохранён.' if blocked else
+                   'Повторяется исследование без результата. Сохраняется состояние для смены подхода.'
+                   if reason == 'work_stalled' else
+                   'Достигнут безопасный предел контекста. Сохраняется состояние для новой сессии.')
+        self.store.event(self.task['id'], 'session_handoff', message, 'warning' if blocked else 'info',
+                         data=self.session_stop)
+
+    def begin_finalization(self):
+        # The inspected history has ended; the supervisor supplies a new bounded
+        # evidence dossier. It still goes through the context admission check.
+        with self.lock:
+            self.finalizing = True
+            self.session_stop = None
+
+    def reject_handoff(self, handler):
+        payload = json.dumps({'error': {'type': 'supervisor_session_boundary',
+                             'message': 'End this session. The supervisor will preserve state and continue.',
+                             'details': self.session_stop}}, ensure_ascii=False).encode()
+        handler.send_response(409)
+        handler.send_header('Content-Type', 'application/json')
+        handler.send_header('Content-Length', str(len(payload)))
+        handler.end_headers()
+        handler.wfile.write(payload)
+
+    def observe_context(self, decision, metrics):
+        observed = self.context_budget.observe(decision, metrics.prompt_tokens)
+        if observed:
+            self.store.update(self.task['id'], context_calibration=dict(observed, identity=self.budget_identity),
+                              context_health=dict(decision.metrics, **observed))
+
+    def observe_provider_error(self, error, decision, metrics):
+        """Route explicit context refusals identically for HTTP and SSE errors.
+
+        Streaming providers may have sent HTTP 200 before prompt processing
+        fails. Inspect the error payload, not just its HTTP status. Only an
+        explicit requested-token count may strengthen estimate calibration.
+        """
+        if isinstance(error, dict) and 'error' in error:
+            error = error['error']
+        detail = error if isinstance(error, str) else json.dumps(error, ensure_ascii=False)
+        self.inference_error = detail[-1500:]
+        if not re.search(r'exceeds.*context|exceed_context|context_length_exceeded|'
+                         r'maximum context length', detail, re.I | re.S):
+            return
+        counted = re.search(r'request\s*\((\d+) tokens\)', detail, re.I)
+        if counted:
+            metrics.prompt_tokens = int(counted[1])
+            self.observe_context(decision, metrics)
+        self.request_handoff('context_handoff', dict(decision.metrics,
+            cause='provider_context_refusal', error=self.inference_error))
+
     async def forward(self, handler, body):
         self.trace.observe_messages(body.get('messages', []))
         task = self.store.get(self.task['id'])
@@ -233,7 +306,24 @@ class InferenceGateway:
         if version:
             apply_task_context(body, additions)
         from .user_instructions import gate_request
+        self.tool_catalog.shape(body)
         gate_request(body, task, reviewer=bool(self.task.get('review_phase')))
+        if not self.finalizing and self.session_stop is None:
+            pending = bool(self.trace.snapshot()['pending_tools']) or self.commands.has_running_foreground()
+            problem = self.trace.progress.problem(pending=pending)
+            if problem:
+                self.request_handoff('work_stalled', problem)
+        decision = self.context_budget.assess(body)
+        if decision.action != 'allow':
+            # A client's compactor can wrap an entire conversation in one user
+            # message. That is replaceable history, not oversized original goal.
+            blocked = decision.action == 'blocked' and bool(body.get('tools') or self.finalizing)
+            self.request_handoff('context_blocked' if blocked else 'context_handoff',
+                                 dict(decision.metrics, cause=decision.reason,
+                                      auxiliary_request=not bool(body.get('tools'))), blocked=blocked)
+        if self.session_stop is not None:
+            self.reject_handoff(handler)
+            return
         if body.get('stream'):
             body['stream_options'] = dict(body.get('stream_options') or {}, include_usage=True)
         headers = {'Content-Type': 'application/json'}
@@ -264,9 +354,15 @@ class InferenceGateway:
                     data = await response.aread()
                     if response.is_success:
                         metrics.accept(json.loads(data), time.monotonic())
+                        self.observe_context(decision, metrics)
                         self.publish_tools(metrics)
                     else:
-                        self.inference_error = data.decode('utf-8', errors='replace')[-1500:]
+                        detail = data.decode('utf-8', errors='replace')
+                        try:
+                            detail = json.loads(detail)
+                        except ValueError:
+                            pass
+                        self.observe_provider_error(detail, decision, metrics)
                     handler.wfile.write(data)
                     return
                 async for line in response.aiter_lines():
@@ -280,6 +376,14 @@ class InferenceGateway:
                             payload = json.loads(line[5:].strip())
                         except ValueError:
                             payload = {}
+                        if isinstance(payload, dict) and payload.get('error') is not None:
+                            self.observe_provider_error(payload, decision, metrics)
+                            self.publish_activity(metrics, request_id, finished=True)
+                            # Finish this explicit error event even if the
+                            # provider hangs or sends [DONE] after its refusal.
+                            handler.wfile.write((line + '\n\n').encode('utf-8'))
+                            handler.wfile.flush()
+                            return
                         now = time.monotonic()
                         if metrics.accept(payload, now):
                             self.last_activity = now
@@ -291,6 +395,8 @@ class InferenceGateway:
                     handler.wfile.write((line + '\n').encode('utf-8'))
                     handler.wfile.flush()
                 self.publish_activity(metrics, request_id, finished=True)
+                if finished:
+                    self.observe_context(decision, metrics)
                 sample = dict(metrics.result(), time=time.time(), request_id=request_id,
                               iteration=task['iteration'])
                 if finished and sample['tokens_per_second'] is not None:

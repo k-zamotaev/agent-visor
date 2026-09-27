@@ -121,12 +121,14 @@ def test_loopback_mcp_transport_and_config(tmp_path):
             assert client.post(gateway.mcp_url, json={'jsonrpc': '2.0', 'method': 'notifications/initialized'}).status_code == 202
             listing = client.post(gateway.mcp_url, json=dict(request, method='tools/list')).json()
             assert {tool['name'] for tool in listing['result']['tools']} == {
-                'exec', 'poll', 'stop', 'wait_any', 'get_progress', 'update_progress', 'apply_user_instructions'}
+                'exec', 'poll', 'stop', 'wait_any', 'get_progress', 'update_progress',
+                'apply_user_instructions', 'select_toolset'}
             unknown = dict(request, method='tools/call', params={'name': 'stop', 'arguments': {'process_id': '1234'}})
             assert client.post(gateway.mcp_url, json=unknown).json()['result']['isError']
         prompt = prepare_documents(task, {'instance': 'fake', 'context': 16384, 'command_mcp_url': gateway.mcp_url})
         config = json.loads(read_document(task, 'opencode.json'))
-        assert config['permission'] == {'bash': 'deny', 'agentvisor_process_exec': 'allow',
+        assert config['permission'] == {'bash': 'deny', 'task': 'deny', 'agentvisor_process_exec': 'allow',
+                                        'agentvisor_process_select_toolset': 'allow',
                                         'agentvisor_process_get_progress': 'allow',
                                         'agentvisor_process_update_progress': 'allow',
                                         'agentvisor_process_apply_user_instructions': 'allow'}

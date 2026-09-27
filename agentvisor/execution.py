@@ -31,6 +31,9 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
     next_health_check, unhealthy = started, 0
     budget = min(task['timeout_seconds'], task['max_hours'] * 3600 - task.get('elapsed', 0))
 
+    def handoff():
+        return getattr(inference, 'session_stop', None)
+
     def idle_problem():
         if trace and trace.problem():
             return trace.problem()
@@ -88,6 +91,28 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
                         break
 
     readers_stop = threading.Event()
+
+    def drain_terminal_tools(seconds):
+        # The next HTTP request can precede OpenCode's authoritative tool JSON.
+        # Keep that completion even when preflight rejects the next request.
+        if not trace:
+            return
+        until = time.monotonic() + seconds
+        while time.monotonic() < until and not cancel.is_set():
+            try:
+                channel, line = messages.get(timeout=min(.02, max(.001, until - time.monotonic())))
+            except queue.Empty:
+                continue
+            if channel != 'stdout' or not line:
+                continue
+            try:
+                event = json.loads(line)
+                part = event.get('part') or {}
+                if (event.get('type') in {'tool_use', 'tool_result'} and
+                        (part.get('state') or {}).get('status') in {'completed', 'error'}):
+                    trace.observe_event(part)
+            except (ValueError, AttributeError, TypeError):
+                continue
     readers = [threading.Thread(target=read, args=(process.stdout, 'stdout'), daemon=True),
                threading.Thread(target=read, args=(process.stderr, 'stderr'), daemon=True)]
     for thread in readers:
@@ -97,6 +122,9 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
             duration = time.monotonic() - started
             if cancel.is_set():
                 reason = 'cancelled'
+                break
+            if handoff():
+                reason, failed = handoff()['reason'], False
                 break
             if task.get('review_phase') and getattr(getattr(inference, 'commands', None), 'review_submitted', False):
                 # A validated terminal submission ends review; more model reasoning adds no value.
@@ -179,6 +207,9 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
                 if cancel.wait(0.1):
                     reason = 'cancelled'
                     break
+                if handoff():
+                    reason, failed = handoff()['reason'], False
+                    break
                 if time.monotonic() - started >= budget:
                     reason, failed = ('review_handoff', False) if task.get('review_handoff') else ('timeout', True)
                     break
@@ -191,12 +222,30 @@ def execute(store, task, argv, cancel, env=None, kind='agent', health_check=None
                     reason, failed, error_detail = 'runtime_unavailable', True, problem
                     break
     finally:
-        readers_stop.set()
+        if handoff():
+            drain_terminal_tools(.3)
         stop_tree(process)
+        if handoff():
+            drain_terminal_tools(.1)
+        readers_stop.set()
+        # A 409 may make the CLI exit before this loop sees the handoff signal.
+        # It is a controlled boundary, not a failed implementation or review.
+        if handoff() and not cancel.is_set():
+            reason, failed = handoff()['reason'], False
+            commands = getattr(inference, 'commands', None)
+            # Finish finite checks under their original deadlines; background
+            # services never prevent a handoff. Cancellation remains effective.
+            while (commands and commands.has_running_foreground() and
+                   time.monotonic() - started < budget and not cancel.wait(.1)):
+                store.update(task['id'], elapsed=task.get('elapsed', 0) + time.monotonic() - started)
+            if cancel.is_set():
+                reason = 'cancelled'
         for thread in readers:
             thread.join(timeout=1)
         store.update(task['id'], pid=None, pid_created=None)
     diagnostics = trace.snapshot() if trace else {}
+    if handoff():
+        diagnostics['session_handoff'] = handoff()
     if getattr(inference, 'commands', None):
         native = inference.commands.snapshot()
         diagnostics['tool_failures'] = (diagnostics.get('tool_failures', []) + native['tool_failures'])[-8:]

@@ -57,7 +57,7 @@ def role_prompt(role, relative, goal_version):
         f'\nSESSION ROLE: {name}. Use the same loaded model in this sequential session. '
         'Stay within the existing task, iteration and command budgets; do not start another model '
         'or delegate parallel inference. Preserve the current goal, user constraints and permissions. '
-        f'Read {relative}/GOAL.md, {relative}/PROGRESS.md and the project AGENTS.md. '
+        'Use the original goal in the supervisor contract, the current plan tool, and project AGENTS.md. '
         f'TASK DOCUMENT SCOPE: {relative}/ is the authoritative directory for this task. '
         'Root-level GOAL.md, PROGRESS.md, MEMORY.md, DONE.md and RUN_PROMPT.md may belong '
         'to unrelated work: do not use them as this task\'s goal, checklist or handoff, and do not '
@@ -89,8 +89,8 @@ def role_prompt(role, relative, goal_version):
     if name != 'executor':
         raise ValueError('Unknown session role')
     return shared + (
-        f'Read the latest handoff in {relative}/MEMORY.md when present. Treat any proposed diagnosis '
-        'as a hypothesis and verify its assumptions before acting. Implement one concrete repair or '
+        'Use the supervisor TASK HANDOFF MEMORY. Do not import unscoped or old MEMORY.md notes. '
+        'A scoped diagnostic_proposal is a hypothesis; verify its assumptions before acting. Implement one concrete repair or '
         'the next unchecked step, run its meaningful acceptance check, and preserve the actual result. '
         'A diagnosis alone does not complete a step; record unresolved failures for the next session.\n'
     )

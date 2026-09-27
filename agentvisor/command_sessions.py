@@ -177,6 +177,7 @@ class CommandSessions:
         stdout, stderr = self._tail(entry['stdout_log']), self._tail(entry['stderr_log'])
         output = stdout + ('\n[stderr]\n' + stderr if stderr else '')
         return {'process_id': identifier, 'status': entry['status'],
+                'background': entry['background'],
                 'exit_code': entry['process'].poll(), 'output': output[-12000:],
                 'stdout_log': str(entry['stdout_log']), 'stderr_log': str(entry['stderr_log']),
                 'timeout_ms': entry['timeout_ms'], 'shell': entry['shell'],
