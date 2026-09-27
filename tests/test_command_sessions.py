@@ -10,7 +10,7 @@ import time
 import psutil
 import pytest
 
-from agentvisor.command_sessions import CommandSessions
+from agentvisor.command_sessions import CommandSessions, _powershell_text
 
 
 @pytest.fixture
@@ -145,6 +145,46 @@ def test_python_and_nested_child_preserve_cyrillic_diagnostics(sessions, monkeyp
     for expected in ('Получено: купить ноутбук', 'Дочерняя ошибка'):
         assert expected in stderr and expected in result['output']
     assert '\ufffd' not in result['output']
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Native Windows PowerShell CLIXML')
+def test_powershell_host_and_real_errors_have_readable_output_and_raw_log(sessions):
+    result = sessions.start({'command': "Write-Host 'Маркер хоста'; "
+                            "Write-Error 'Настоящая ошибка'; throw 'Сбой проверки'", 'yield_ms': 0})
+    result = wait_result(sessions, result['process_id'])
+    raw = Path(result['stderr_log']).read_text(encoding='utf-8')
+    assert '#< CLIXML' in raw and 'InformationRecord' in raw
+    assert result['exit_code'] != 0
+    for expected in ('Маркер хоста', 'Настоящая ошибка', 'Сбой проверки', 'FullyQualifiedErrorId'):
+        assert expected in result['output']
+    assert 'InformationRecord' not in result['output'] and '<Objs' not in result['output']
+    assert '_x000D_' not in result['output']
+    assert len(result['output']) < len(raw)
+    # Polling must not rewrite the authoritative audit log.
+    sessions.poll({'process_id': result['process_id']})
+    assert Path(result['stderr_log']).read_text(encoding='utf-8') == raw
+
+
+@pytest.mark.parametrize('value', [
+    'Plain error: expected <value>',
+    '#< CLIXML\n<Objs><broken',
+    '<S S="Error">truncated first part</S></Objs>',
+    '#< CLIXML\n<Objs xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+    '<S S="Error">still running',
+    '#< CLIXML\n<Objs xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+    '<Obj S="unknown"><ToString>Keep this evidence</ToString></Obj></Objs>',
+    '#< CLIXML\n<Objs xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+    '<S S="Error">valid error</S></Objs>\nPlain trailing error',
+])
+def test_incomplete_or_unrecognized_powershell_serialization_is_preserved(value):
+    assert _powershell_text(value) == value
+
+
+def test_clixml_utf16_escapes_are_decoded_once_in_stream_order():
+    value = ('#< CLIXML\n<Objs xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+             '<S S="Warning">First_x000D__x000A_</S>'
+             '<S S="Error">Keep literal _x005F_x000A_ and emoji _xD83D__xDE00_</S></Objs>')
+    assert _powershell_text(value) == '[warning] First\r\nKeep literal _x000A_ and emoji 😀\n'
 
 
 def test_poll_preserves_logs_and_bounds_output(sessions):

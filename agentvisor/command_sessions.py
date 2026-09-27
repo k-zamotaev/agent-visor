@@ -3,13 +3,57 @@ import base64
 import ctypes
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import subprocess
 import threading
 import time
+import xml.etree.ElementTree as ET
 
 from .processes import WindowsJob, stop_tree
+
+
+def _powershell_text(value):
+    """Render complete, recognized CLIXML stderr; retain unfamiliar/raw tails.
+
+    The raw log is never rewritten. In-flight, truncated or mixed XML remains
+    verbatim so a parsing failure cannot erase an actual command error.
+    """
+    marker = '#< CLIXML'
+    if not value.startswith(marker) or '<!DOCTYPE' in value:
+        return value
+    try:
+        root = ET.fromstring(value[len(marker):].lstrip())
+    except ET.ParseError:
+        return value
+    ns = '{http://schemas.microsoft.com/powershell/2004/04}'
+    if root.tag != ns + 'Objs' or (root.text or '').strip():
+        return value
+    parts = []
+    for record in root:
+        if (record.tail or '').strip():
+            return value
+        stream = record.get('S', '').lower()
+        if record.tag == ns + 'S' and stream in {'error', 'warning', 'verbose', 'debug', 'information'}:
+            if list(record):
+                return value
+            text = record.text or ''
+        elif record.tag == ns + 'Obj' and stream == 'information':
+            rendered = record.find(ns + 'ToString')
+            if rendered is None or list(rendered):
+                return value
+            text = rendered.text or ''
+        else:
+            return value
+        # CLIXML escapes UTF-16 code units. Decode once: _x005F_x000A_
+        # represents the literal text _x000A_, not a newline.
+        text = re.sub(r'_x([0-9a-fA-F]{4})_', lambda match: chr(int(match[1], 16)), text)
+        text = text.encode('utf-16', 'surrogatepass').decode('utf-16', 'replace')
+        if stream != 'error':
+            text = '[' + stream + '] ' + text
+        parts.append(text if text.endswith('\n') else text + '\n')
+    return ''.join(parts)
 
 
 def _job_pids(job):
@@ -170,17 +214,19 @@ class CommandSessions:
             entry['status'] = 'completed'
 
     @staticmethod
-    def _tail(path):
+    def _tail(path, *, powershell=False):
         try:
             with path.open('rb') as stream:
                 stream.seek(0, 2)
                 stream.seek(max(0, stream.tell() - 16000))
-                return stream.read().decode('utf-8', errors='replace')[-12000:]
+                text = stream.read().decode('utf-8', errors='replace')
+                return (_powershell_text(text) if powershell else text)[-12000:]
         except OSError as error:
             return '[Command log unavailable: ' + str(error)[:500] + ']'
 
     def _result(self, identifier, entry):
-        stdout, stderr = self._tail(entry['stdout_log']), self._tail(entry['stderr_log'])
+        stdout = self._tail(entry['stdout_log'])
+        stderr = self._tail(entry['stderr_log'], powershell=entry['shell'] == 'powershell')
         output = stdout + ('\n[stderr]\n' + stderr if stderr else '')
         return {'process_id': identifier, 'status': entry['status'],
                 'background': entry['background'],
