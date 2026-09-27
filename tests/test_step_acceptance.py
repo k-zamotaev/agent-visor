@@ -158,6 +158,39 @@ def test_review_prompt_does_not_include_worker_instructions(tmp_path):
     assert 'Do not edit product code' in prompt
 
 
+def test_review_bootstrap_survives_native_reader_line_cap_without_losing_scope(tmp_path):
+    store, _, task = make(tmp_path, step_acceptance=True)
+    task['review_retry'] = {'error': 'Previous failure: ' + '\\' * 1480}
+    review = {'id': 'review-readback', 'steps': [
+        {'id': f'step-{index}', 'text': 'Exact criterion ' + ('\\' * 1900 if index == 0 else 'UI check'),
+         'index': index} for index in range(20)]}
+    prompt = prepare_documents(task, {'instance': 'fake', 'context': 65536,
+                                     'command_mcp_url': 'http://127.0.0.1/fake'}, review=review)
+    write_document(task, 'RUN_PROMPT.md', prompt)
+    actual = read_document(task, 'RUN_PROMPT.md')
+    replayed = '\n'.join(line[:2000] for line in actual.splitlines())
+    assert max(map(len, actual.splitlines())) < 2000
+    assert replayed == actual.rstrip('\n')
+    for instruction in ('After status=submitted, stop.', 'Before ending this session, WRITE',
+                        'and parse it as JSON', 'Even if checks fail', 'separate verdict phase',
+                        'A fabricated command', 'A final chat response or a MEMORY.md note'):
+        assert instruction in replayed
+    # The manual report example remains ordinary valid JSON on its own line.
+    manual = json.loads(next(line for line in actual.splitlines() if line.startswith('{"review_id":')))
+    assert manual['review_id'] == review['id'] and manual['steps'][0]['passed'] is True
+    scope_text = actual.split('The following JSON is the requested scope', 1)[1].split(':\n', 1)[1]
+    scope, _ = json.JSONDecoder().raw_decode(scope_text)
+    def unwrap(value):
+        if isinstance(value, dict):
+            if set(value) == {'text_chunks'}:
+                return ''.join(value['text_chunks'])
+            return {key: unwrap(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [unwrap(item) for item in value]
+        return value
+    assert unwrap(scope) == review['steps']
+
+
 def test_invalid_report_is_rejected_and_changed_goal_requires_new_review(tmp_path):
     store, _, task = make(tmp_path)
     write_document(task, 'PROGRESS.md', '- [x] Step\n')

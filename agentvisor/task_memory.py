@@ -11,7 +11,8 @@ MAX_MEMORY = 9500
 DIAGNOSTIC_MAX_AGE = 8
 DIAGNOSTIC = re.compile(
     r'(^\s*(?:FAILED\b|ERROR\b|Traceback\b|[\w.]*Error\b|Python \d|error TS\d)|'
-    r'\b\d+ (?:passed|failed|skipped|errors?)\b|Cannot find module|No such file|not found)', re.I)
+    r'\b\d+ (?:passed|failed|skipped|errors?)\b|Cannot find module|No such file|not found|'
+    r'PSSecurityException|FullyQualifiedErrorId\s*:|UnauthorizedAccess)', re.I)
 SECRET = re.compile(
     r'(?i)(\b(?:api[_-]?key|access[_-]?token|authorization|password|passwd|secret|token)'
     r'[\"\x27]?\s*[:=]\s*)(?:[\"\x27][^\"\x27\r\n]*[\"\x27]|[^\s,;}]+)')
@@ -29,6 +30,10 @@ def _safe(value, limit=400):
 
 def _diagnostics(value):
     # Never copy arbitrary file dumps, environment output or successful stdout.
+    if '#< CLIXML' in str(value):
+        from .command_sessions import _powershell_text
+        prefix, marker, tail = str(value).partition('#< CLIXML')
+        value = prefix + _powershell_text(marker + tail)
     lines = [line for line in str(value or '').splitlines() if DIAGNOSTIC.search(line)]
     return _safe('\n'.join(lines[-3:]), 350)
 
@@ -132,10 +137,20 @@ def _observe_command(row, data, task):
     outcome = ('failed' if data.get('failed') or code not in (None, 0) or status in
                {'failed', 'error', 'timed_out', 'output_limit'} else
                'succeeded' if code == 0 else 'unknown')
+    output = _diagnostics(data.get('output') or data.get('output_tail'))
+    # A trailing successful PowerShell statement can mask a prior shell error.
+    # Preserve the real process exit code, but never turn that mixed result into
+    # a successful verification observation.
+    mixed = code == 0 and bool(re.search(r'PSSecurityException|FullyQualifiedErrorId\s*:|UnauthorizedAccess',
+                                        output, re.I))
+    if mixed:
+        outcome = 'unknown'
     return {'key': key, 'event_id': row['id'], 'time': row['time'],
             'command': _safe(command, 500), 'cwd': _safe(cwd, 200),
             'exit_code': code, 'outcome': outcome,
-            'output': _diagnostics(data.get('output') or data.get('output_tail')),
+            'output': output,
+            **({'result_warning': 'Shell error was observed despite process exit 0; check outcome is unconfirmed.'}
+               if mixed else {}),
             'is_verification_result': row['kind'] == 'verification_finished' or is_verification_command(command)}
 
 
@@ -416,6 +431,14 @@ def memory_prompt(task):
         elif last_check and last_check['outcome'] == 'failed':
             payload['next_action'] = {'operation': 'inspect_failed_check',
                                       'event_id': last_check['event_id']}
+        elif last_check and last_check.get('result_warning'):
+            payload['next_action'] = {'operation': 'inspect_inconclusive_check',
+                                      'event_id': last_check['event_id']}
+        elif changed and last_check and last_check['outcome'] == 'succeeded':
+            latest_edit = max(item['event_id'] for item in changed)
+            payload['next_action'] = {'operation': 'assess_step_completion', 'step_id': identity,
+                'check_event_ids': [item['event_id'] for item in checks
+                                    if item['event_id'] > latest_edit and item['outcome'] == 'succeeded'][-8:]}
     # Native file readers can truncate individual lines. Put actionable state
     # first and keep every JSON line small, including escaped long strings.
     priority = ('current_step', 'next_action', 'diagnostic_proposal', 'next_step')
@@ -434,6 +457,10 @@ def memory_prompt(task):
             'Old MEMORY.md prose is excluded. A diagnostic_proposal is an unverified hypothesis '
             'from a freshly observed scoped diagnostic write; verify its assumptions before acting. '
             'Processes from previous sessions have been stopped; never assume their ports are still ready. '
+            'For assess_step_completion, compare the existing results with the complete current criterion: '
+            'claim the step for independent review only if all requirements are met, otherwise name and '
+            'implement the concrete remaining gap. Do not repeat unchanged checks merely because a new '
+            'session started. An inconclusive check needs its recorded error inspected; exit 0 alone is not acceptance. '
             'Preserve the full user instructions in the session contract; pending versions take priority. '
             'Use the last check and changed paths to continue focused work; do not restart a whole-project survey.\n')
 

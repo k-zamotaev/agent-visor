@@ -163,7 +163,7 @@ def test_check_and_write_survive_many_reads_and_commands(tmp_path):
     assert memory['changed_files'][0]['path'] == 'export.py'
     assert memory['changed_files'][0]['sha256']
     assert memory['omitted_events'] > 0
-    assert prompt_payload(task)['next_action'] is None
+    assert prompt_payload(task)['next_action']['operation'] == 'assess_step_completion'
     assert 'def export' not in memory_prompt(task)
 
 
@@ -461,3 +461,42 @@ def test_later_write_removes_earlier_read_excerpt_of_same_file(tmp_path):
     task = remember_iteration(store, task)
     assert not task['task_memory']['inspected_files']
     assert task['task_memory']['changed_files'][0]['path'] == 'export.py'
+
+
+def test_successful_current_checks_direct_completion_assessment_without_accepting(tmp_path):
+    from agentvisor.progress_plan import initialize
+    store, _, task = make(tmp_path)
+    write_document(task, 'PROGRESS.md', '- [ ] Export\n')
+    task = initialize_memory(store, initialize(store, task))
+    path = Path(task['workspace']) / 'export.py'
+    path.write_text('pass', encoding='utf-8')
+    record_file(store, task, path)
+    task = remember_iteration(store, task)
+    assert prompt_payload(task)['next_action']['operation'] == 'verify_changed_files'
+    store.event(task['id'], 'command_finished', 'pytest tests/test_export.py', data={
+        'status': 'completed', 'exit_code': 0, 'output': '34 passed in 0.8s'})
+    task = remember_iteration(store, task)
+    action = prompt_payload(task)['next_action']
+    assert action['operation'] == 'assess_step_completion' and action['check_event_ids']
+    assert task['task_memory']['accepted_count'] == 0
+    assert task['progress_plan']['steps'][0]['done'] is False
+    record_file(store, task, path)
+    task = remember_iteration(store, task)
+    assert prompt_payload(task)['next_action']['operation'] == 'verify_changed_files'
+
+
+def test_powershell_security_error_exit_zero_is_inconclusive_not_success(tmp_path):
+    store, _, task = make(tmp_path)
+    task = initialize_memory(store, task)
+    output = ('TSC_EXIT=\n[stderr]\n#< CLIXML\n'
+              '<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+              '<S S="Error">CategoryInfo : PSSecurityException_x000D__x000A_'
+              'FullyQualifiedErrorId : UnauthorizedAccess_x000D__x000A_</S></Objs>')
+    store.event(task['id'], 'command_finished', 'npx tsc --noEmit; Write-Host $LASTEXITCODE', data={
+        'status': 'completed', 'exit_code': 0, 'output': output})
+    task = remember_iteration(store, task)
+    check = task['task_memory']['checks'][0]
+    assert check['exit_code'] == 0 and check['outcome'] == 'unknown'
+    assert 'PSSecurityException' in check['output'] and 'UnauthorizedAccess' in check['output']
+    assert '#< CLIXML' not in check['output'] and check['result_warning']
+    assert prompt_payload(task)['next_action']['operation'] == 'inspect_inconclusive_check'
