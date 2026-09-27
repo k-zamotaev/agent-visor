@@ -52,6 +52,7 @@ def session_role(task, review=False):
 def role_prompt(role, relative, goal_version):
     """Give each role a bounded outcome; execution limits remain supervisor-owned."""
     name = role['name']
+    from .progress_tools import PROTOCOL
     shared = (
         f'\nSESSION ROLE: {name}. Use the same loaded model in this sequential session. '
         'Stay within the existing task, iteration and command budgets; do not start another model '
@@ -64,6 +65,7 @@ def role_prompt(role, relative, goal_version):
         'including after conversation compaction. If a summary or another file conflicts, reread '
         f'{relative}/GOAL.md and {relative}/PROGRESS.md; do not adopt the unrelated plan. '
     )
+    shared += PROTOCOL
     if name == 'diagnostician':
         return shared + (
             'Investigate ONE recorded blocker. First inspect the exact failure and previous attempts; '
@@ -75,8 +77,7 @@ def role_prompt(role, relative, goal_version):
             f'Write a compact handoff to {relative}/MEMORY.md with goal_version: {goal_version} '
             'on its own line: observed failure; hypothesis; exact probe and result; what remains '
             'uncertain; recommended repair; the check that will decide whether that repair works. '
-            f'Update diagnostic notes in {relative}/PROGRESS.md without adding completed checkmarks '
-            'or weakening the checklist. Keep MEMORY.md within 2000 characters. Never write DONE.md '
+            'Keep diagnostic notes in MEMORY.md, within 2000 characters. Do not edit the plan. Never write DONE.md '
             'or claim milestone acceptance in this role. End the session for the executor to act.\n'
         )
     if name == 'reviewer':

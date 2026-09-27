@@ -59,3 +59,28 @@ def test_gateway_restores_contract_after_compaction_without_manual_context(tmp_p
     assert not current.get('context_additions')
     assert current.get('context_version', 0) == 0
     assert current.get('applied_context_version', 0) == 0
+
+
+def test_gateway_repairs_progress_and_restores_current_protocol_after_compaction(tmp_path, model_server):
+    from agentvisor.progress_plan import change, initialize
+    from agentvisor.tasks import read_document, write_document
+    url, requests = model_server
+    store, engine, task = make(tmp_path)
+    write_document(task, 'PROGRESS.md', '- [x] Database\n- [ ] Export\n')
+    task = initialize(store, task)
+    with InferenceGateway(store, task, dict(task['profile'], base_url=url), engine.cancel) as gateway:
+        change(store, task, {'operation': 'append', 'steps': ['Polish UI'],
+                            'goal_version': 1, 'expected_revision': 1})
+        write_document(task, 'PROGRESS.md', 'Compacted: all steps completed')
+        body = {'model': 'test', 'messages': [{'role': 'user', 'content': 'Continue from the short summary'}],
+                'stream': True, 'tools': [{'type': 'function', 'function': {
+                    'name': 'read', 'parameters': {'type': 'object'}}}]}
+        with httpx.Client(trust_env=False) as client:
+            assert client.post(gateway.base_url + '/chat/completions', json=body).status_code == 200
+        assert '- [ ] Export' in read_document(task, 'PROGRESS.md')
+        assert '- [ ] Polish UI' in read_document(task, 'PROGRESS.md')
+    contract = requests[0]['body']['messages'][0]['content']
+    assert 'PROGRESS PROTOCOL' in contract
+    assert 'agentvisor_process_update_progress' in contract
+    assert '"revision": 2' in contract
+    assert 'Accepted steps cannot be changed' in contract

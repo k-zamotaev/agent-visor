@@ -2,6 +2,7 @@
 import json
 import sqlite3
 import time
+import threading
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,6 +15,7 @@ ACTIVE = {'preparing', 'running', 'verifying', 'recovering', 'pausing', 'stoppin
 
 class Store:
     def __init__(self, directory):
+        self.progress_lock = threading.RLock()
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.path = self.directory / 'agentvisor.sqlite3'
@@ -28,6 +30,9 @@ class Store:
                     message TEXT NOT NULL, data TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS event_task ON events(task_id, id);
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS progress_revisions (
+                    task_id TEXT NOT NULL, revision INTEGER NOT NULL, created REAL NOT NULL,
+                    source TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(task_id, revision));
             ''')
 
     @contextmanager
@@ -87,6 +92,29 @@ class Store:
             db.execute('INSERT INTO events(task_id,time,level,kind,message,data) VALUES(?,?,?,?,?,?)',
                        (task_id, time.time(), level, kind, str(message)[:6000],
                         json.dumps(data, ensure_ascii=False)))
+
+    def change_progress(self, task_id, change, source):
+        """Validate and save a plan and its audit revision in the same transaction."""
+        with self.progress_lock, self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT body FROM tasks WHERE id=?', (task_id,)).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            task = json.loads(row['body'])
+            previous = task.get('progress_plan')
+            plan = change(task)
+            if plan == previous:
+                return task
+            revision = (previous or {}).get('revision', 0) + 1
+            plan = dict(plan, revision=revision)
+            task.update(progress_plan=plan, updated=time.time())
+            db.execute('INSERT INTO progress_revisions VALUES (?, ?, ?, ?, ?)',
+                       (task_id, revision, task['updated'], source, json.dumps(plan, ensure_ascii=False)))
+            db.execute('UPDATE tasks SET body=?, updated=? WHERE id=?',
+                       (json.dumps(task, ensure_ascii=False), task['updated'], task_id))
+        self.event(task_id, 'progress_updated', 'План сохранён по протоколу',
+                   data={'revision': revision, 'operation': source, 'steps': len(plan['steps'])})
+        return task
 
     def add_context(self, task_id, text, *, recheck=False):
         with self.connect() as db:

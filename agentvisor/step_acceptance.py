@@ -19,7 +19,7 @@ def accepted_steps(task):
 
 def claimed_steps(task):
     from .tasks import checklist
-    return [{'id': step_id(index, item['text']), 'text': item['text'], 'index': index}
+    return [{'id': item.get('id') or step_id(index, item['text']), 'text': item['text'], 'index': index}
             for index, item in enumerate(checklist(task))
             if item['done']]
 
@@ -29,9 +29,14 @@ def pending_steps(task):
     return [step for step in claimed_steps(task) if step['id'] not in accepted]
 
 
-def restore_accepted_claims(task):
+def restore_accepted_claims(task, store=None):
     """A worker cannot revoke an unchanged criterion with a still-valid receipt."""
     from .tasks import checklist
+    if task.get('progress_plan') is not None:
+        if store is not None:
+            from .progress_plan import sync_document
+            sync_document(store, task)
+        return []
     accepted = accepted_steps(task)
     missing = [{'id': step_id(index, item['text']), 'text': item['text'], 'index': index}
                for index, item in enumerate(checklist(task))
@@ -39,8 +44,13 @@ def restore_accepted_claims(task):
     return missing if missing and mark_steps(task, missing, True) else []
 
 
-def mark_steps(task, steps, done):
+def mark_steps(task, steps, done, store=None):
     from .tasks import read_document, write_document
+    if task.get('progress_plan') is not None:
+        from .progress_plan import mark
+        if store is None:
+            raise ValueError('A controlled plan must be updated through the store')
+        return mark(store, task, steps, done)
     selected = {item['id'] for item in steps}
     index = -1
     matched = set()

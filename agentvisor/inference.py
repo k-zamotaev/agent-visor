@@ -209,8 +209,15 @@ class InferenceGateway:
 
     async def forward(self, handler, body):
         self.trace.observe_messages(body.get('messages', []))
+        task = self.store.get(self.task['id'])
         if body.get('tools'):
-            apply_session_contract(body, self.session_contract)
+            if task.get('progress_plan') is not None:
+                from .progress_plan import sync_document
+                task = sync_document(self.store, task)
+                contract = session_contract(dict(self.task, progress_plan=task['progress_plan']))
+            else:
+                contract = self.session_contract
+            apply_session_contract(body, contract)
         effort = self.task.get('active_effort') or {}
         ceiling = effort.get('output_limit')
         if body.get('tools') and type(ceiling) is int and ceiling > 0:
@@ -218,7 +225,6 @@ class InferenceGateway:
             for field in fields or ['max_tokens']:
                 requested = body.get(field)
                 body[field] = min(requested, ceiling) if type(requested) is int and requested > 0 else ceiling
-        task = self.store.get(self.task['id'])
         additions = task.get('context_additions', [])
         # OpenCode also uses this provider for titles and conversation summaries.
         # Those requests have no tools and must not consume a task-context update.

@@ -25,6 +25,7 @@ from .checkpoint_flow import checkpoint_after_acceptance, prepare_checkpoint
 from .skill_library import record_skills, skill_prompt
 from .adaptive_effort import session_effort
 from .tasks import checklist, prepare_documents, read_document, state_dir, write_document
+from .progress_plan import initialize as initialize_plan, sync_document as sync_progress
 
 
 class VerificationFailure(RuntimeError):
@@ -149,7 +150,13 @@ class Supervisor:
         try:
             while not self.cancel.is_set():
                 task = self.store.get(task_id)
-                restored = restore_accepted_claims(task)
+                if task['mode'] == 'opencode' and not self.command_builder:
+                    try:
+                        task = initialize_plan(self.store, task)
+                    except (ValueError, OSError) as error:
+                        self.transition(task_id, 'blocked', 'Не удалось восстановить план: ' + str(error), 'error')
+                        break
+                restored = restore_accepted_claims(task, self.store)
                 if restored:
                     self.store.event(task_id, 'accepted_claims_restored', 'Восстановлены отметки принятых этапов',
                                      data={'steps': restored})
@@ -222,8 +229,7 @@ class Supervisor:
                     with gateway as inference:
                         if inference:
                             ready = dict(ready, api_base_url=inference.base_url)
-                            if task['command_policy']['allowed']:
-                                ready['command_mcp_url'] = inference.mcp_url
+                            ready['command_mcp_url'] = inference.mcp_url
                         role = session_role(task)
                         prompt = prepare_documents(task, ready)
                         task = self.store.update(task_id, iteration=task['iteration'] + 1,
@@ -248,15 +254,17 @@ class Supervisor:
                     self.store.event(task_id, 'iteration_finished', f'Итерация {task["iteration"]} завершена',
                                      data=dict(result, iteration=task['iteration']))
                     task = remember_iteration(self.store, task, result)
+                    if task.get('progress_plan') is not None:
+                        task = sync_progress(self.store, task)
                     if self.cancel.is_set():
                         break
-                    restore_accepted_claims(task)
+                    restore_accepted_claims(task, self.store)
                     if role['name'] == 'diagnostician' and task['goal_version'] == claim_goal_version:
-                        mark_steps(task, [s for s in claimed_steps(task) if s['id'] not in prior_claims], False)
+                        mark_steps(task, [s for s in claimed_steps(task) if s['id'] not in prior_claims], False, self.store)
                     if result['failed']:
                         if (task.get('step_acceptance', True) and task['mode'] != 'demo' and
                                 task['goal_version'] == claim_goal_version):
-                            mark_steps(task, [s for s in claimed_steps(task) if s['id'] not in prior_claims], False)
+                            mark_steps(task, [s for s in claimed_steps(task) if s['id'] not in prior_claims], False, self.store)
                         task = observe_progress(self.store, task)
                         raise RuntimeError(f'Ошибка итерации: {result.get("error_detail") or result["reason"] or "exit " + str(result["exit_code"])}')
                     if role['name'] == 'executor' and task.get('step_acceptance', True) and task['mode'] != 'demo':
@@ -405,7 +413,7 @@ class Supervisor:
                 raise InterruptedError()
             if latest['goal_version'] != task['goal_version']:
                 raise VerificationFailure({'failed': True, 'error_detail': 'Goal changed before review'})
-            if not mark_steps(task, steps, True):
+            if not mark_steps(task, steps, True, self.store):
                 raise VerificationFailure({'failed': True, 'error_detail': 'Plan changed before milestone review'})
             write_document(task, 'STEP_REVIEW.json', '')
         self.transition(task['id'], 'verifying', 'Независимая приёмка этапа')
@@ -457,12 +465,12 @@ class Supervisor:
             accepted, error = validate_review(task, review, observed_evidence(self.store, task, cursor))
             if result['failed']:
                 error = result.get('error_detail') or result.get('reason') or 'Reviewer process failed'
-            if not error and not mark_steps(task, steps, True):
+            if not error and not mark_steps(task, steps, True, self.store):
                 error = 'Plan changed during milestone review'
             if error:
                 # A broken report/process is not evidence that implementation failed.
                 if not result['failed'] and error.startswith('Milestone rejected:'):
-                    mark_steps(task, steps, False)
+                    mark_steps(task, steps, False, self.store)
                     self.store.update(task['id'], review_retry=None)
                 else:
                     # A report transport/schema problem belongs to the reviewer, not product repair.

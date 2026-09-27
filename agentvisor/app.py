@@ -184,7 +184,8 @@ def create_app(data_dir=None):
 
     @app.get('/api/tasks/{task_id}')
     def task(task_id: str, request: Request):
-        value = task_view(store.get(task_id), language(request))
+        from .progress_plan import sync_document
+        value = task_view(sync_document(store, store.get(task_id)), language(request))
         return dict(value, checklist=checklist(value), done=read_document(value, 'DONE.md'),
                     metrics=[event_view(event, language(request)) for event in store.metrics(task_id)],
                     documents={name: read_document(value, name) for name in ('GOAL.md', 'PROGRESS.md')})

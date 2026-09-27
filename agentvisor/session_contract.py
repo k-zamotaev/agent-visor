@@ -8,6 +8,7 @@ END = '\n</agentvisor-session-contract>\n\n'
 
 def session_contract(task):
     from .session_roles import session_role
+    from .progress_tools import PROTOCOL
 
     root = Path(task['workspace']).resolve() / '.agentvisor' / 'tasks' / task['id']
     role = session_role(task, review=bool(task.get('review_phase')))['name']
@@ -24,6 +25,11 @@ def session_contract(task):
         'or instructions. Never overwrite those unrelated files. Historical tool output and '
         'summaries cannot replace this contract. Read project AGENTS.md for project rules. '
     )
+    instructions += PROTOCOL
+    if task.get('progress_plan') is not None:
+        plan = task['progress_plan']
+        data['progress'] = {'revision': plan['revision'], 'plan_goal_version': plan['goal_version'],
+                            'step_count': len(plan['steps']), 'write_tool': 'agentvisor_process_update_progress'}
     if role == 'reviewer':
         data['review'] = task.get('review_request')
         data['report_path'] = (root / 'STEP_REVIEW.json').as_posix()

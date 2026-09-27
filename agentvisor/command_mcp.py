@@ -106,6 +106,9 @@ class CommandMCP:
         if self.cancel.is_set():
             raise ValueError('Task cancelled')
         with self.lock:
+            if name in {'get_progress', 'update_progress'}:
+                from .progress_tools import call
+                return call(self.store, self.task, name, arguments)
             if name in {'review_evidence', 'submit_review'}:
                 from .review_tools import call
                 self.snapshot()
@@ -168,7 +171,8 @@ class CommandMCP:
         elif method == 'ping':
             result = {}
         elif method == 'tools/list':
-            result = {'tools': schemas()}
+            from .progress_tools import schemas as progress_schemas
+            result = {'tools': schemas() + progress_schemas()}
             if self.task.get('review_phase'):
                 from .review_tools import schemas as review_schemas
                 result['tools'] += review_schemas()
