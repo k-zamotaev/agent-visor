@@ -1,4 +1,5 @@
 import ctypes
+import math
 import os
 import re
 import sys
@@ -26,7 +27,7 @@ from .skill_library import record_skills, skill_prompt
 from .adaptive_effort import session_effort
 from .tasks import checklist, prepare_documents, read_document, state_dir, write_document
 from .progress_plan import initialize as initialize_plan, sync_document as sync_progress
-from .session_continuation import HANDOFFS, continue_session, note_completed_session
+from .session_continuation import HANDOFFS, continue_session, note_completed_session, release_missing_diagnosis
 
 
 class VerificationFailure(RuntimeError):
@@ -271,12 +272,39 @@ class Supervisor:
                     if (result.get('reason') not in HANDOFFS and role['name'] == 'diagnostician'
                             and continuation.get('diagnostic_attempts', 0) >= 2
                             and not continuation.get('diagnosed')):
-                        self.transition(task_id, 'blocked', missing_report, 'warning')
-                        break
+                        task = release_missing_diagnosis(self.store, task)
+                        self.store.event(task_id, 'next_iteration',
+                                         'Факты сохранены; исполнитель продолжит без диагностического отчёта')
+                        continue
                     if result.get('reason') in HANDOFFS:
                         # A session boundary must not uncheck claims, reload the
-                        # model, grow its context, or inflate failure_streak.
-                        task, action = continue_session(self.store, task, result)
+                        # model or inflate failure_streak. An irreducible prompt
+                        # can grow only when this task explicitly enables tuning.
+                        context_adjusted = False
+                        if result['reason'] == 'context_blocked' and task.get('auto_tune'):
+                            evidence = (result.get('session_handoff') or {}).get('evidence') or {}
+                            profile = (task.get('resolved_profile') or task['profile']).copy()
+                            maximum = task.get('profile_plan', {}).get('max_context', 262144)
+                            if (evidence.get('cause') == 'static_context_overflow' and
+                                    type(evidence.get('static_tokens')) is int and
+                                    type(evidence.get('output_reserve')) is int and
+                                    type(maximum) is int and maximum > profile['context']):
+                                limit = evidence.get('context_limit') or profile['context']
+                                reserve = evidence.get('safety_reserve', 0) / max(1, limit)
+                                needed = math.ceil((evidence['static_tokens'] + evidence['output_reserve'] + 1024) /
+                                                   max(.5, 1 - reserve))
+                                context = min(maximum, max(profile['context'] * 2,
+                                                           ((needed + 8191) // 8192) * 8192))
+                                if context > profile['context']:
+                                    profile['context'] = context
+                                    task = self.store.update(task_id, resolved_profile=profile,
+                                                             context_floor=context)
+                                    self.store.event(task_id, 'context_increased',
+                                                     f'Контекст увеличен до {context}: начальный запрос не помещался',
+                                                     'warning', data={'previous': limit, 'cause': evidence['cause']})
+                                    context_adjusted = True
+                        task, action = continue_session(self.store, task, result,
+                                                        context_adjusted=context_adjusted)
                         if action == 'blocked':
                             message = ('Начальный контекст не помещается в бюджет модели. Прогресс сохранён.'
                                        if result['reason'] == 'context_blocked' else

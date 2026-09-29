@@ -128,6 +128,22 @@ def test_new_file_content_resets_budget_but_file_timestamp_does_not(tmp_path):
     assert task['session_continuation']['without_result'] == 1
 
 
+def test_new_browser_observation_resets_handoff_stagnation_once(tmp_path):
+    store, task = setup(tmp_path)
+    task, _ = rotate(store, task)
+    observation = {'session_progress': {'result_evidence': [
+        {'operation': 'observe browseros-neo_navigate', 'fingerprint': 'course-page-1'}]}}
+    task, action = rotate(store, task, **observation)
+    assert action == 'continue'
+    assert task['session_continuation']['without_result'] == 0
+    task, _ = rotate(store, task, **observation)
+    assert task['session_continuation']['without_result'] == 1
+    observation['session_progress']['result_evidence'][0]['fingerprint'] = 'course-page-2'
+    task, action = rotate(store, task, **observation)
+    assert action == 'continue'
+    assert task['session_continuation']['without_result'] == 0
+
+
 def test_same_check_output_timing_is_not_new_evidence_but_changed_result_is(tmp_path):
     store, task = setup(tmp_path)
     memory = copy.deepcopy(task['task_memory'])
@@ -209,7 +225,7 @@ def test_searching_test_directories_is_not_a_completed_verification(tmp_path):
     assert task['session_continuation']['without_result'] == 3
 
 
-def test_interrupted_diagnosis_needs_report_and_retries_only_once(tmp_path):
+def test_interrupted_diagnosis_returns_to_executor_after_two_missing_reports(tmp_path):
     store, task = setup(tmp_path)
     task, _ = rotate(store, task)
     for _ in range(3):
@@ -219,9 +235,16 @@ def test_interrupted_diagnosis_needs_report_and_retries_only_once(tmp_path):
     assert task['session_continuation']['diagnosed'] is False
     assert task['session_continuation']['diagnostic_attempts'] == 1
     task, action = rotate(store, task, role='diagnostician', report=False)
-    assert action == 'blocked'
+    assert action == 'continue'
     assert task['session_continuation']['diagnosed'] is False
     assert task['recovery_context']['diagnostic_report_missing'] is True
+    assert task['recovery_context']['repair'] is False
+    assert task['session_continuation']['diagnosis_requested'] is False
+    task, action = rotate(store, task)
+    assert action == 'continue'
+    assert task['session_continuation']['diagnostic_attempts'] == 2
+    assert len([event for event in store.events(task['id'])
+                if event['kind'] == 'diagnostic_fallback']) == 1
 
 
 def test_stale_report_is_not_a_completed_new_diagnostic_attempt(tmp_path):
@@ -260,7 +283,7 @@ def test_second_diagnostic_report_gets_executor_attempt_before_blocking(tmp_path
     assert action == 'blocked'
 
 
-def test_supervisor_blocks_missing_ordinary_diagnostic_report_with_honest_reason(tmp_path, monkeypatch):
+def test_supervisor_continues_after_missing_ordinary_diagnostic_report(tmp_path, monkeypatch):
     from test_supervisor import make, finish
     from agentvisor.task_memory import initialize_memory
     from agentvisor.recovery import initialize_progress
@@ -275,9 +298,10 @@ def test_supervisor_blocks_missing_ordinary_diagnostic_report_with_honest_reason
     engine.start(task['id'])
     finish(engine)
     result = store.get(task['id'])
-    assert result['status'] == 'blocked' and result['iteration'] == 1
-    assert 'не сохранили отчёт' in result['reason']
+    assert result['status'] == 'blocked' and result['iteration'] == 8
+    assert 'лимит итераций' in result['reason']
     assert result['session_continuation']['diagnosed'] is False
+    assert any(event['kind'] == 'diagnostic_fallback' for event in store.events(task['id']))
 
 
 def test_legacy_diagnosed_flag_without_report_is_not_success_and_keeps_budget(tmp_path):

@@ -39,7 +39,7 @@ def _facts(task, result):
         # Durations and volatile stdout do not turn a repeated check into progress.
         facts.add(_fingerprint(['check', entry.get('key'), entry.get('outcome'), entry.get('exit_code')]))
     for entry in (result.get('session_progress') or {}).get('result_evidence', []):
-        if entry.get('operation', '').startswith('check '):
+        if entry.get('operation', '').startswith(('check ', 'observe ')):
             facts.add(entry['fingerprint'])
     return facts
 
@@ -57,14 +57,33 @@ def note_completed_session(store, task, result):
     if facts - seen:
         state.update(without_result=0, diagnosed=False, diagnosis_requested=False,
                      diagnostic_attempts=0, diagnostic_report_missing=False,
-                     executor_attempts_after_diagnosis=0,
+                     executor_attempts_after_diagnosis=0, diagnostic_fallback=False,
                      seen=(list(state.get('seen', [])) + sorted(facts - seen))[-128:])
     elif state.get('diagnosis_requested') and (task.get('active_role') or {}).get('name') == 'diagnostician':
         state.update(_diagnostic_result(task, state))
     return store.update(task['id'], session_continuation=state)
 
 
-def continue_session(store, task, result):
+def release_missing_diagnosis(store, task):
+    """Return control to the executor without claiming a diagnosis exists."""
+    state = dict(task.get('session_continuation') or {})
+    first_fallback = not state.get('diagnostic_fallback', False)
+    state.update(diagnosis_requested=False, diagnosed=False,
+                 diagnostic_report_missing=True, diagnostic_fallback=True)
+    recovery = dict(task.get('recovery_context') or {})
+    recovery.update(goal_version=task['goal_version'], repair=False,
+                    reason='diagnostic_report_missing', failure_layer='session',
+                    error='Diagnostic report was not saved. Continue from recorded tool and event evidence.')
+    recovery.pop('failure_cause', None)
+    task = store.update(task['id'], session_continuation=state, recovery_context=recovery)
+    if first_fallback:
+        store.event(task['id'], 'diagnostic_fallback',
+                    'Диагностический отчёт не сохранён; исполнитель продолжит по фактам журнала.',
+                    'warning', data={'attempts': state.get('diagnostic_attempts', 0)})
+    return task
+
+
+def continue_session(store, task, result, *, context_adjusted=False):
     """Return (fresh task, action): continue, diagnose, or blocked.
 
     Context rotation is not a failed milestone. Only repeated rotations with no
@@ -94,17 +113,20 @@ def continue_session(store, task, result):
     elif role == 'executor' and diagnostic['diagnosed']:
         diagnostic['executor_attempts_after_diagnosis'] += 1
     missing = not diagnostic['diagnosed'] and diagnostic['diagnostic_attempts'] >= MAX_DIAGNOSTIC_ATTEMPTS
-    blocked = (result['reason'] == 'context_blocked' or missing or
+    blocked = (result['reason'] == 'context_blocked' and not context_adjusted or
                diagnostic['diagnosed'] and stagnant >= 5 and diagnostic['executor_attempts_after_diagnosis'] > 0)
-    diagnose = not blocked and stagnant >= 3 and not diagnostic['diagnosed']
+    diagnose = not blocked and not missing and stagnant >= 3 and not diagnostic['diagnosed']
     state = {'scope': scope, 'without_result': stagnant,
              'diagnosis_requested': diagnose or previous.get('diagnosis_requested', False) and not advanced,
              **diagnostic, 'last_reason': result['reason'],
+             'diagnostic_fallback': previous.get('diagnostic_fallback', False) and not advanced,
              'rotations': previous.get('rotations', 0) + 1,
              'seen': (list(previous.get('seen', [])) + sorted(facts - seen))[-128:]}
     task = store.update(task['id'], session_continuation=state)
     evidence = (result.get('session_handoff') or {}).get('evidence', {})
-    message = ('Initial instructions/tools exceed the input budget; reduce the connected tool/schema '
+    message = ('Context budget was increased for the next session; retry at the new size.'
+               if context_adjusted else
+               'Initial instructions/tools exceed the input budget; reduce the connected tool/schema '
                'overhead or use a supported context size. Retrying unchanged cannot help.'
                if result['reason'] == 'context_blocked' else
                'Continue from TASK HANDOFF MEMORY: reuse observed paths and checks, make one bounded '
@@ -115,6 +137,8 @@ def continue_session(store, task, result):
                     repair=diagnose, no_result_sessions=stagnant,
                     diagnostic_report_missing=missing)
     task = store.update(task['id'], recovery_context=recovery)
+    if missing:
+        task = release_missing_diagnosis(store, task)
     action = 'blocked' if blocked else 'diagnose' if diagnose else 'continue'
     store.event(task['id'], 'session_continued',
                 'Состояние сессии сохранено; продолжение учитывает предыдущие результаты.',

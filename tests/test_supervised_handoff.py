@@ -79,7 +79,7 @@ def test_next_work_session_and_independent_reviews_finish_after_handoff(tmp_path
 
 
 @pytest.mark.parametrize('reason', ['context_handoff', 'work_stalled'])
-def test_repeated_empty_handoffs_bound_missing_diagnostic_reports_without_fake_failures(tmp_path, monkeypatch, reason):
+def test_repeated_empty_handoffs_return_to_executor_until_task_limit(tmp_path, monkeypatch, reason):
     store, engine, task, profiles = setup(tmp_path, step_acceptance=False)
     plan, receipts = copy.deepcopy(task['progress_plan']), copy.deepcopy(task['step_reviews'])
     roles = []
@@ -91,11 +91,13 @@ def test_repeated_empty_handoffs_bound_missing_diagnostic_reports_without_fake_f
     monkeypatch.setattr('agentvisor.supervisor.execute', execute)
     engine.run(task['id'])
     current = store.get(task['id'])
-    assert current['status'] == 'blocked' and current['iteration'] == 6
-    assert roles == ['executor'] * 4 + ['diagnostician', 'diagnostician']
+    assert current['status'] == 'blocked' and current['iteration'] == task['max_iterations']
+    assert roles[:6] == ['executor'] * 4 + ['diagnostician', 'diagnostician']
+    assert all(role == 'executor' for role in roles[6:])
     assert current['session_continuation']['diagnosed'] is False
     assert current['session_continuation']['diagnostic_attempts'] == 2
-    assert 'не сохранили отчёт' in current['reason']
+    assert 'лимит итераций' in current['reason']
+    assert len([event for event in store.events(task['id']) if event['kind'] == 'diagnostic_fallback']) == 1
     assert current['failure_streak'] == 2
     assert current['progress_plan'] == plan and current['step_reviews'] == receipts
     assert current['recoveries'] == 0
@@ -112,6 +114,33 @@ def test_iteration_limit_is_preserved_across_controlled_handoffs(tmp_path, monke
     assert current['status'] == 'blocked' and current['iteration'] == 2
     assert current['max_iterations'] == 2 and 'лимит итераций' in current['reason'].lower()
     assert current['failure_streak'] == 2
+
+
+def test_auto_tune_recovers_static_context_overflow_before_blocking(tmp_path, monkeypatch):
+    store, engine, task, profiles = setup(tmp_path, step_acceptance=False)
+    task = store.update(task['id'], max_iterations=2)
+    calls = 0
+
+    def execute(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return result(reason='context_blocked', exit_code=0,
+                          session_handoff={'reason': 'context_blocked', 'blocked': True,
+                                           'evidence': {'cause': 'static_context_overflow',
+                                                        'context_limit': task['profile']['context'],
+                                                        'safety_reserve': 3277, 'static_tokens': 20000,
+                                                        'output_reserve': 4096}})
+        return boundary()
+
+    monkeypatch.setattr('agentvisor.supervisor.execute', execute)
+    engine.run(task['id'])
+    current = store.get(task['id'])
+    assert calls == 2
+    assert current['status'] == 'blocked' and 'лимит итераций' in current['reason']
+    assert current['resolved_profile']['context'] > task['profile']['context']
+    assert len(profiles) == 2 and profiles[1]['context'] > profiles[0]['context']
+    assert len([event for event in store.events(task['id']) if event['kind'] == 'context_increased']) == 1
 
 
 def test_final_claim_at_handoff_is_reviewed_and_completes_without_another_worker(tmp_path, monkeypatch):

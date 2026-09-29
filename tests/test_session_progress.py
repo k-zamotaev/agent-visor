@@ -60,6 +60,21 @@ def test_changed_read_results_and_short_rechecks_are_not_a_loop():
     assert guard.problem() is None
 
 
+def test_distinct_browser_observations_count_once_per_action():
+    guard, _ = detector()
+    complete(guard, 'page1', tool='browseros-neo_navigate',
+             arguments={'url': 'https://example.test/page-1'}, output='Page 1 loaded')
+    complete(guard, 'repeat', tool='browseros-neo_navigate',
+             arguments={'url': 'https://example.test/page-1'}, output='Changing nonce')
+    complete(guard, 'failed', tool='browseros-neo_navigate',
+             arguments={'url': 'https://example.test/page-2'}, output='', status='error')
+    assert guard.snapshot()['new_progress_count'] == 1
+    assert guard.snapshot()['result_evidence'][0]['operation'].startswith('observe browseros-neo_navigate')
+    complete(guard, 'page2', tool='browseros-neo_navigate',
+             arguments={'url': 'https://example.test/page-2'}, output='Page 2 loaded')
+    assert guard.snapshot()['new_progress_count'] == 2
+
+
 def test_mixed_search_and_repeated_reads_matches_observed_research_cycle():
     guard, clock = detector()
     for index in range(16):

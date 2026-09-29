@@ -14,6 +14,10 @@ from collections import Counter, OrderedDict, deque
 
 _READS = {'read', 'glob', 'grep', 'get_progress'}
 _WRITES = {'write', 'edit', 'apply_patch'}
+_BROWSER_OBSERVATIONS = {'browseros-neo_tabs', 'browseros-neo_navigate',
+                         'browseros-neo_snapshot', 'browseros-neo_read',
+                         'browseros-neo_grep', 'browseros-neo_evaluate',
+                         'browseros-neo_act', 'browseros-neo_download'}
 _NOTES = {'memory.md', 'progress.md', 'goal.md', 'run_prompt.md', 'done.md',
           'step_review.json', 'agents.md'}
 _VERIFY = re.compile(
@@ -152,6 +156,12 @@ class SessionProgress:
                 self._result(entry['signature'], entry['label'])
             elif entry['command'] and not inferred:
                 self.command_result(call_id, entry['command'], status=status, exit_code=exit_code)
+            elif (entry['tool'] in _BROWSER_OBSERVATIONS and not failed and
+                  not inferred and status == 'completed' and str(output).strip()):
+                # A distinct browser action is useful observed work, even before
+                # the agent has written a durable artifact. Repeating the same
+                # action with the same arguments cannot reset recovery again.
+                self._result(_hash(['observe', entry['signature']]), 'observe ' + entry['label'])
             elif entry['epoch'] == self.epoch and entry['tool'] in _READS:
                 self.window.append(self._read_result(entry, call_id, output, error, status))
             elif entry['epoch'] == self.epoch and entry['explore'] and (
