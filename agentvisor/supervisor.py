@@ -28,6 +28,7 @@ from .adaptive_effort import session_effort
 from .tasks import checklist, prepare_documents, read_document, state_dir, write_document
 from .progress_plan import initialize as initialize_plan, sync_document as sync_progress
 from .session_continuation import HANDOFFS, continue_session, note_completed_session, release_missing_diagnosis
+from .workspace_observer import snapshot as workspace_snapshot, changes as workspace_changes
 
 
 class VerificationFailure(RuntimeError):
@@ -254,8 +255,12 @@ class Supervisor:
                             task['mode'] != 'demo' and profile.get('watchdog', True) and hasattr(self.runtime, 'health')) else None
                         prior_claims = {s['id'] for s in claimed_steps(task)}
                         claim_goal_version = task['goal_version']
+                        files_before = workspace_snapshot(task['workspace'])
                         result = execute(self.store, task, self.command(task, prompt, ready), self.cancel,
                                          agent_environment(task), health_check=health_check, inference=inference)
+                    changed_paths = workspace_changes(files_before, workspace_snapshot(task['workspace']))
+                    if changed_paths:
+                        result = dict(result, workspace_changes=changed_paths)
                     task = self.store.update(task_id, elapsed=base_elapsed + time.monotonic() - started,
                                              output_tokens=task['output_tokens'] + result['output_tokens'],
                                              agent_seconds=task.get('agent_seconds', 0) + result['duration'])

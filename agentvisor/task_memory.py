@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import re
+import time
 from pathlib import Path
 
 
@@ -420,6 +421,13 @@ def remember_iteration(store, task, result=None):
                 if observation is not None:
                     observation['step_id'] = step_id
                     memory['tool_results'] = _replace(memory.get('tool_results', []), observation, 3)
+    for raw in (result or {}).get('workspace_changes', [])[:16]:
+        relative = _path(task, {'path': raw})
+        if relative is None:
+            continue
+        entry = {'path': relative, 'event_id': upper, 'time': time.time(),
+                 'operation': 'workspace_change', 'step_id': step_id}
+        memory['changed_files'] = _replace(memory.get('changed_files', []), entry, 16, key='path')
     latest = store.get(task['id'])
     if latest['goal_version'] != task['goal_version']:
         return latest

@@ -68,6 +68,22 @@ def test_tool_handoff_prompt_is_compact_while_checkpoint_keeps_output(tmp_path):
     assert len(payload['tool_results'][-1]['excerpt']) <= 700
 
 
+def test_shell_created_file_is_checkpointed_as_observed_change(tmp_path):
+    store, _, task = make(tmp_path)
+    task = initialize_memory(store, task)
+    target = Path(task['workspace']) / '_work' / 'inventory.txt'
+    target.parent.mkdir(exist_ok=True)
+    target.write_text('module 1', encoding='utf-8')
+    task = remember_iteration(store, task, {'failed': False, 'workspace_changes': ['_work/inventory.txt']})
+    changed = task['task_memory']['changed_files']
+    assert len(changed) == 1
+    assert changed[0]['path'] == '_work/inventory.txt'
+    assert changed[0]['operation'] == 'workspace_change'
+    assert changed[0]['sha256']
+    assert prompt_payload(task)['next_action']['operation'] == 'verify_changed_files'
+    assert task['task_memory']['accepted_count'] == 0
+
+
 def test_new_goal_excludes_old_events_and_old_notes(tmp_path):
     store, _, task = make(tmp_path)
     task = initialize_memory(store, task)

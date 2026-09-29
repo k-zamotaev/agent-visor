@@ -1,12 +1,13 @@
 """Run supervisor state transitions without an external model."""
 import copy
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from agentvisor.recovery import initialize_progress
-from agentvisor.step_acceptance import pending_steps
+from agentvisor.step_acceptance import accepted_steps, pending_steps
 from agentvisor.tasks import checklist, write_document
 from test_progress_protocol import fixture, update
 from test_step_acceptance import report, result
@@ -114,6 +115,24 @@ def test_iteration_limit_is_preserved_across_controlled_handoffs(tmp_path, monke
     assert current['status'] == 'blocked' and current['iteration'] == 2
     assert current['max_iterations'] == 2 and 'лимит итераций' in current['reason'].lower()
     assert current['failure_streak'] == 2
+
+
+def test_shell_style_workspace_write_is_observed_at_session_boundary(tmp_path, monkeypatch):
+    store, engine, task, _ = setup(tmp_path, step_acceptance=False)
+    task = store.update(task['id'], max_iterations=1)
+
+    def execute(store, current, *args, **kwargs):
+        target = Path(current['workspace']) / '_work' / 'inventory.txt'
+        target.parent.mkdir(exist_ok=True)
+        target.write_text('module 1', encoding='utf-8')
+        return boundary()
+
+    monkeypatch.setattr('agentvisor.supervisor.execute', execute)
+    engine.run(task['id'])
+    current = store.get(task['id'])
+    assert current['task_memory']['changed_files'][0]['path'] == '_work/inventory.txt'
+    assert current['session_continuation']['without_result'] == 0
+    assert current['task_memory']['accepted_count'] == len(accepted_steps(task))
 
 
 def test_auto_tune_recovers_static_context_overflow_before_blocking(tmp_path, monkeypatch):
