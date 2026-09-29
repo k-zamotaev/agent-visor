@@ -137,7 +137,9 @@ class Supervisor:
                 '--model', 'agentvisor/' + ready['instance']]
         if task['auto_permissions']:
             argv.append('--auto')
-        if len(prompt.encode('utf-16-le')) > 12000:
+        # Medium prompts fit safely on the Windows command line. Passing them
+        # directly avoids a read-tool round trip in every short-context session.
+        if len(prompt.encode('utf-16-le')) > 24000:
             write_document(task, 'RUN_PROMPT.md', prompt)
             prompt = ('Read ' + str(state_dir(task) / 'RUN_PROMPT.md') +
                       ' first. It contains the supervisor instructions for this session; follow them.')

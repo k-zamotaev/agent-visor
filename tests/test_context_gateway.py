@@ -121,6 +121,21 @@ def test_mcp_selection_changes_next_request_without_losing_directives(tmp_path, 
         assert 'Implement CSV export and verify the result.' in json.dumps(item['body'], ensure_ascii=False)
 
 
+def test_current_step_external_tool_is_preselected_on_new_gateway(tmp_path, model_server):
+    url, upstream = model_server
+    store, engine, task = make(tmp_path)
+    task = store.update(task['id'], task_memory={'current_step': {'id': 'step-1'},
+        'tool_results': [{'tool': 'browseros-neo_snapshot', 'step_id': 'step-1', 'status': 'completed'}]})
+    body = request(tools=[tool('read'), tool('agentvisor_process_select_toolset'),
+                          tool('browseros-neo_snapshot'), tool('blender_get_objects_summary')])
+    with InferenceGateway(store, task, profile_for(task, url), engine.cancel) as gateway:
+        with httpx.Client(trust_env=False) as client:
+            assert client.post(gateway.base_url + '/chat/completions', json=body).status_code == 200
+    visible = {item['function']['name'] for item in upstream[0]['body']['tools']}
+    assert 'browseros-neo_snapshot' in visible
+    assert 'blender_get_objects_summary' not in visible
+
+
 def test_browser_toolset_stays_usable_in_32k_context(tmp_path, model_server):
     url, upstream = model_server
     store, engine, task = make(tmp_path)

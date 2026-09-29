@@ -82,10 +82,11 @@ def _forced_name(body):
 class ToolCatalog:
     """Keep native/supervisor tools plus at most one optional MCP server active."""
 
-    def __init__(self):
+    def __init__(self, preferred_tool=None):
         self._groups = {}
         self._active = None
         self._selected = set()
+        self._preferred_tool = preferred_tool
         self._lock = threading.RLock()
         self._markers = set()
 
@@ -134,6 +135,10 @@ class ToolCatalog:
                 group = _group(name)
                 if group:
                     self._groups.setdefault(group, {})[name] = tool
+            preferred_group = _group(self._preferred_tool)
+            if self._active is None and preferred_group in self._groups:
+                self.select(preferred_group)
+                self._preferred_tool = None
             forced = _forced_name(body)
             forced_group = _group(forced)
             if forced_group and any(_name(tool) == forced for tool in tools):
@@ -145,6 +150,7 @@ class ToolCatalog:
             if self._groups:
                 marker = (START + 'Native and supervisor tools remain available. Optional MCP toolsets '
                           'are loaded on demand to conserve context; their schemas are not lost. '
+                          'An active toolset is already available; do not reselect it unchanged. '
                           'Call agentvisor_process_select_toolset with a catalogue name to expose a '
                           'small starter set. For any other listed tool, call the same selector with '
                           'its exact tool name; that tool becomes available on the next request. '

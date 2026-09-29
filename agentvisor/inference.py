@@ -121,7 +121,11 @@ class InferenceGateway:
         self.trace = ToolTrace(store, task)
         self.commands = CommandMCP(store, task, cancel)
         self.commands.progress = self.trace.progress
-        self.tool_catalog = ToolCatalog()
+        memory = task.get('task_memory') or {}
+        current_step = (memory.get('current_step') or {}).get('id')
+        preferred_tool = next((item.get('tool') for item in reversed(memory.get('tool_results', []))
+                               if item.get('step_id') == current_step and item.get('status') == 'completed'), None)
+        self.tool_catalog = ToolCatalog(preferred_tool=preferred_tool)
         self.commands.select_toolset = self.tool_catalog.select
         self.context_budget = ContextBudget(profile.get('context'), profile.get('output_limit', 4096))
         self.budget_identity = [profile.get('runtime'), profile.get('base_url'), profile.get('model'),

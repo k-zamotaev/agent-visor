@@ -315,3 +315,13 @@ def test_long_prompt_is_stored_without_windows_command_line_overflow(tmp_path, m
     assert len(' '.join(argv)) < 2000
     assert 'RUN_PROMPT.md' in argv[-1]
     assert read_document(task, 'RUN_PROMPT.md') == prompt
+
+
+def test_medium_prompt_avoids_bootstrap_file_read(tmp_path, monkeypatch):
+    store, engine, task = make(tmp_path)
+    engine.command_builder = None
+    monkeypatch.setattr('agentvisor.supervisor.executable', lambda _: 'opencode.cmd')
+    prompt = 'Bounded handoff context.\n' * 450
+    argv = engine.command(task, prompt, {'instance': 'same-model'})
+    assert argv[-1] == prompt
+    assert len(' '.join(argv)) < 16000

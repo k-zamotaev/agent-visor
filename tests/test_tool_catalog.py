@@ -44,6 +44,16 @@ def test_optional_groups_are_discoverable_without_their_large_schemas():
     assert request['messages'][1:] == original_messages[1:]
 
 
+def test_recent_tool_preselects_its_group_when_schemas_arrive():
+    catalog = ToolCatalog(preferred_tool='browseros-neo_snapshot')
+    request = body()
+    catalog.shape(request)
+    assert catalog.catalogue[1]['active'] is True
+    assert 'browseros-neo_snapshot' in names(request)
+    assert 'blender_execute_blender_code' not in names(request)
+    assert 'do not reselect it unchanged' in request['messages'][0]['content']
+
+
 def test_selecting_browser_then_blender_keeps_at_most_one_group():
     catalog = ToolCatalog()
     catalog.shape(body())
