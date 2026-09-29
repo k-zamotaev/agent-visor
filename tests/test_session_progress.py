@@ -73,6 +73,14 @@ def test_distinct_browser_observations_count_once_per_action():
     complete(guard, 'page2', tool='browseros-neo_navigate',
              arguments={'url': 'https://example.test/page-2'}, output='Page 2 loaded')
     assert guard.snapshot()['new_progress_count'] == 2
+    complete(guard, 'run1', tool='browseros-neo_run',
+             arguments={'script': 'inspect current module'}, output='Lessons found nonce=aaa111 [ref=e2]')
+    complete(guard, 'run-repeat', tool='browseros-neo_run',
+             arguments={'script': 'inspect current module'}, output='Lessons found nonce=bbb222 [ref=e9]')
+    assert guard.snapshot()['new_progress_count'] == 3
+    complete(guard, 'run2', tool='browseros-neo_run',
+             arguments={'script': 'inspect current module'}, output='Different lessons nonce=ccc333')
+    assert guard.snapshot()['new_progress_count'] == 4
 
 
 def test_mixed_search_and_repeated_reads_matches_observed_research_cycle():

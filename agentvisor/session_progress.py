@@ -17,7 +17,8 @@ _WRITES = {'write', 'edit', 'apply_patch'}
 _BROWSER_OBSERVATIONS = {'browseros-neo_tabs', 'browseros-neo_navigate',
                          'browseros-neo_snapshot', 'browseros-neo_read',
                          'browseros-neo_grep', 'browseros-neo_evaluate',
-                         'browseros-neo_act', 'browseros-neo_download'}
+                         'browseros-neo_act', 'browseros-neo_download',
+                         'browseros-neo_run'}
 _NOTES = {'memory.md', 'progress.md', 'goal.md', 'run_prompt.md', 'done.md',
           'step_review.json', 'agents.md'}
 _VERIFY = re.compile(
@@ -35,6 +36,14 @@ def _hash(value):
 
 def _name(tool):
     return tool.removeprefix('agentvisor_process_')
+
+
+def _observation_signature(entry, output):
+    if entry['tool'] != 'browseros-neo_run':
+        return _hash(['observe', entry['signature']])
+    content = re.sub(r'nonce=[0-9a-f]+', 'nonce=*', str(output), flags=re.I)
+    content = re.sub(r'\[ref=e\d+\]', '[ref=e*]', content)
+    return _hash(['observe', entry['signature'], content[:12000]])
 
 
 def _path(arguments):
@@ -161,7 +170,7 @@ class SessionProgress:
                 # A distinct browser action is useful observed work, even before
                 # the agent has written a durable artifact. Repeating the same
                 # action with the same arguments cannot reset recovery again.
-                self._result(_hash(['observe', entry['signature']]), 'observe ' + entry['label'])
+                self._result(_observation_signature(entry, output), 'observe ' + entry['label'])
             elif entry['epoch'] == self.epoch and entry['tool'] in _READS:
                 self.window.append(self._read_result(entry, call_id, output, error, status))
             elif entry['epoch'] == self.epoch and entry['explore'] and (
