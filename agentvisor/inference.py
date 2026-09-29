@@ -313,7 +313,7 @@ class InferenceGateway:
             problem = self.trace.progress.problem(pending=pending)
             if problem:
                 self.request_handoff('work_stalled', problem)
-        decision = self.context_budget.assess(body)
+        decision = self.tool_catalog.fit_budget(body, self.context_budget)
         if decision.action != 'allow':
             # A client's compactor can wrap an entire conversation in one user
             # message. That is replaceable history, not oversized original goal.

@@ -63,6 +63,46 @@ def test_selecting_browser_then_blender_keeps_at_most_one_group():
     assert catalog.shape(request)['tools_after'] == 6
 
 
+def test_large_toolset_exposes_starter_tools_and_can_select_any_member():
+    catalog = ToolCatalog()
+    request = body()
+    request['tools'] += [tool('browseros-neo_' + str(index)) for index in range(20)]
+    catalog.shape(request)
+    selected = catalog.select('browseros-neo')
+    assert len(selected['tools']) == 4
+    assert len(selected['available_tools']) == 22
+    assert 'browseros-neo_snapshot' in selected['tools']
+    request = body()
+    request['tools'] += [tool('browseros-neo_' + str(index)) for index in range(20)]
+    catalog.shape(request)
+    assert len([name for name in names(request) if name.startswith('browseros-neo_')]) == 4
+    selected = catalog.select('browseros-neo_19')
+    assert selected['tools'] == ['browseros-neo_19']
+    request = body()
+    request['tools'] += [tool('browseros-neo_' + str(index)) for index in range(20)]
+    catalog.shape(request)
+    assert names(request)[-1] == 'browseros-neo_19'
+
+
+def test_budget_fit_releases_optional_schemas_without_losing_core_or_selection():
+    catalog = ToolCatalog()
+    request = body()
+    request['tools'] += [tool('browseros-neo_' + str(index), 'schema ' * 15000)
+                         for index in range(10)]
+    catalog.shape(request)
+    catalog.select('browseros-neo')
+    request = body()
+    request['tools'] += [tool('browseros-neo_' + str(index), 'schema ' * 15000)
+                         for index in range(10)]
+    catalog.shape(request)
+    before = names(request)
+    decision = catalog.fit_budget(request, ContextBudget(32768))
+    assert decision.action == 'allow'
+    assert len(names(request)) < len(before)
+    assert names(request)[:6] == before[:6]
+    assert len([name for name in names(request) if name.startswith('browseros-neo_')]) >= 1
+
+
 def test_unknown_toolset_does_not_change_current_selection():
     catalog = ToolCatalog()
     catalog.shape(body())

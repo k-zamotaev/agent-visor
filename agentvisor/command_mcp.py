@@ -14,8 +14,9 @@ def schemas():
     process = {'process_id': {'type': 'string'}, 'yield_ms': {'type': 'integer', 'minimum': 0, 'maximum': 1000}}
     return [
         {'name': 'select_toolset', 'description':
-         'Activate one connected optional toolset by its exact catalogue name. '
-         'Its tools become available on the next model request. Use none to return to core tools. '
+         'Select an optional toolset by catalogue name to expose a small starter set, '
+         'or select one tool by its exact name from available_tools. The selected tools '
+         'become available on the next model request. Use none to return to core tools. '
          'This changes schema visibility only, never permissions.',
          'inputSchema': {'type': 'object', 'properties': {'name': {'type': 'string'}},
                          'required': ['name'], 'additionalProperties': False}},

@@ -121,6 +121,34 @@ def test_mcp_selection_changes_next_request_without_losing_directives(tmp_path, 
         assert 'Implement CSV export and verify the result.' in json.dumps(item['body'], ensure_ascii=False)
 
 
+def test_browser_toolset_stays_usable_in_32k_context(tmp_path, model_server):
+    url, upstream = model_server
+    store, engine, task = make(tmp_path)
+    tools = [tool('read'), tool('agentvisor_process_select_toolset')]
+    tools += [tool('browseros-neo_' + str(index), 'browser schema ' * 240)
+              for index in range(20)]
+    tools += [tool(name, 'browser schema ' * 240) for name in (
+        'browseros-neo_tabs', 'browseros-neo_snapshot',
+        'browseros-neo_navigate', 'browseros-neo_act')]
+    body = request(messages=[{'role': 'system', 'content': 'Preserve these instructions. ' * 1700},
+                             {'role': 'user', 'content': 'Inspect the page.'}], tools=tools)
+    assert ContextBudget(32768).assess(body).action == 'blocked'
+    with InferenceGateway(store, task, dict(task['profile'], base_url=url, context=32768), engine.cancel) as gateway:
+        with httpx.Client(trust_env=False) as client:
+            endpoint = gateway.base_url + '/chat/completions'
+            assert client.post(endpoint, json=body).status_code == 200
+            result = client.post(gateway.mcp_url, json={'jsonrpc': '2.0', 'id': 1,
+                'method': 'tools/call', 'params': {'name': 'select_toolset',
+                                                   'arguments': {'name': 'browseros-neo'}}}).json()['result']
+            assert result['isError'] is False
+            assert client.post(endpoint, json=body).status_code == 200
+        assert gateway.session_stop is None
+    visible = {item['function']['name'] for item in upstream[-1]['body']['tools']}
+    assert visible == {'read', 'agentvisor_process_select_toolset',
+                       'browseros-neo_tabs', 'browseros-neo_snapshot',
+                       'browseros-neo_navigate', 'browseros-neo_act'}
+
+
 def test_pending_directives_override_selected_browser_toolset(tmp_path, model_server):
     url, upstream = model_server
     store, engine, task = make(tmp_path)
