@@ -114,9 +114,15 @@ def continue_session(store, task, result, *, context_adjusted=False):
         diagnostic['executor_attempts_after_diagnosis'] += 1
     missing = not diagnostic['diagnosed'] and diagnostic['diagnostic_attempts'] >= MAX_DIAGNOSTIC_ATTEMPTS
     blocked = result['reason'] == 'context_blocked' and not context_adjusted
-    diagnose = not blocked and not missing and stagnant >= 3 and not diagnostic['diagnosed']
+    current_step = (memory.get('current_step') or {}).get('id')
+    saved_results = any(item.get('step_id') == current_step and item.get('status') == 'completed'
+                        for item in memory.get('tool_results', []))
+    diagnostic_threshold = 6 if saved_results else 3
+    diagnose = (not blocked and not missing and stagnant >= diagnostic_threshold
+                and not diagnostic['diagnosed'])
     state = {'scope': scope, 'without_result': stagnant,
-             'diagnosis_requested': diagnose or previous.get('diagnosis_requested', False) and not advanced,
+             'diagnosis_requested': diagnose or (previous.get('diagnosis_requested', False) and
+                                                 stagnant >= diagnostic_threshold and not advanced),
              **diagnostic, 'last_reason': result['reason'],
              'diagnostic_fallback': previous.get('diagnostic_fallback', False) and not advanced,
              'rotations': previous.get('rotations', 0) + 1,

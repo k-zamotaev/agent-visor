@@ -145,6 +145,23 @@ def test_browser_observation_does_not_disguise_handoff_stagnation(tmp_path):
     assert task['session_continuation']['without_result'] == 3
 
 
+def test_saved_external_result_gets_executor_handoffs_before_diagnosis(tmp_path):
+    store, task = setup(tmp_path)
+    memory = copy.deepcopy(task['task_memory'])
+    memory['tool_results'] = [{'step_id': (memory.get('current_step') or {}).get('id'),
+                               'status': 'completed', 'event_id': 12, 'tool': 'external_inspect'}]
+    task = store.update(task['id'], task_memory=memory)
+    task, _ = rotate(store, task)
+    for count in range(1, 6):
+        task, action = rotate(store, task)
+        assert action == 'continue'
+        assert task['session_continuation']['without_result'] == count
+        assert task['recovery_context']['repair'] is False
+    task, action = rotate(store, task)
+    assert action == 'diagnose'
+    assert task['session_continuation']['without_result'] == 6
+
+
 def test_same_check_output_timing_is_not_new_evidence_but_changed_result_is(tmp_path):
     store, task = setup(tmp_path)
     memory = copy.deepcopy(task['task_memory'])
