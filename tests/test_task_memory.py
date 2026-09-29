@@ -50,6 +50,24 @@ def test_optional_tool_output_is_checkpointed_without_becoming_completion(tmp_pa
     assert payload['accepted_count'] == 0
 
 
+def test_tool_handoff_prompt_is_compact_while_checkpoint_keeps_output(tmp_path):
+    store, _, task = make(tmp_path)
+    task = initialize_memory(store, task)
+    for index in range(3):
+        store.event(task['id'], 'tool_finished', 'external_inspect', data={
+            'tool': 'external_inspect', 'status': 'completed',
+            'input': {'resource': f'page-{index}'}, 'output': f'page-{index}: ' + 'content ' * 450})
+    task = remember_iteration(store, task)
+    assert len(task['task_memory']['tool_results']) == 3
+    assert len(task['task_memory']['tool_results'][-1]['excerpt']) > 1700
+    prompt = memory_prompt(task)
+    assert len(prompt) < 4500
+    payload = prompt_payload(task)
+    assert len(payload['tool_results']) == 3
+    assert 'excerpt' not in payload['tool_results'][0]
+    assert len(payload['tool_results'][-1]['excerpt']) <= 700
+
+
 def test_new_goal_excludes_old_events_and_old_notes(tmp_path):
     store, _, task = make(tmp_path)
     task = initialize_memory(store, task)
