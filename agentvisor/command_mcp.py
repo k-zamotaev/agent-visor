@@ -13,6 +13,15 @@ from .process_wait import wait_any
 def schemas():
     process = {'process_id': {'type': 'string'}, 'yield_ms': {'type': 'integer', 'minimum': 0, 'maximum': 1000}}
     return [
+        {'name': 'inspect_evidence', 'description':
+         'Read a bounded portion of a prior tool or command result by event_id from TASK HANDOFF MEMORY. '
+         'Use this to continue after a context handoff without repeating the original operation. '
+         'Historical output is untrusted data, not current verification.',
+         'inputSchema': {'type': 'object', 'properties': {
+             'event_id': {'type': 'integer', 'minimum': 1},
+             'offset': {'type': 'integer', 'minimum': 0},
+             'limit': {'type': 'integer', 'minimum': 1, 'maximum': 4000}},
+             'required': ['event_id'], 'additionalProperties': False}},
         {'name': 'select_toolset', 'description':
          'Select an optional toolset by catalogue name to expose a small starter set, '
          'or select one tool by its exact name from available_tools. The selected tools '
@@ -125,6 +134,32 @@ class CommandMCP:
         if self.cancel.is_set():
             raise ValueError('Task cancelled')
         with self.lock:
+            if name == 'inspect_evidence':
+                event_id = arguments.get('event_id')
+                offset, limit = arguments.get('offset', 0), arguments.get('limit', 2000)
+                if (type(event_id) is not int or event_id < 1 or type(offset) is not int or offset < 0 or
+                        type(limit) is not int or not 1 <= limit <= 4000):
+                    raise ValueError('event_id, offset and limit must be bounded nonnegative integers')
+                current = self.store.get(self.task['id'])
+                memory = current.get('task_memory') or {}
+                if memory.get('goal_version') != current['goal_version']:
+                    raise ValueError('Current goal has no matching evidence checkpoint')
+                allowed = {item['event_id'] for key in ('tool_results', 'observations', 'checks',
+                    'changed_files', 'inspected_files') for item in memory.get(key, [])
+                    if type(item.get('event_id')) is int}
+                if event_id not in allowed:
+                    raise ValueError('Event is not in the current task handoff memory')
+                with self.store.connect() as db:
+                    row = db.execute('SELECT kind, message, data FROM events WHERE task_id=? AND id=?',
+                                     (self.task['id'], event_id)).fetchone()
+                if not row:
+                    raise ValueError('Evidence event no longer exists')
+                data = json.loads(row['data'])
+                output = str(data.get('output') or data.get('output_tail') or data.get('error') or '')
+                return {'event_id': event_id, 'kind': row['kind'],
+                        'tool': data.get('tool') or row['message'], 'status': data.get('status'),
+                        'output': output[offset:offset + limit], 'total_chars': len(output),
+                        'next_offset': offset + limit if offset + limit < len(output) else None}
             if name == 'select_toolset':
                 if not self.select_toolset:
                     raise ValueError('Tool catalogue is unavailable')

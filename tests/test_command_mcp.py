@@ -27,6 +27,28 @@ def finish_command(commands, result):
     return result
 
 
+def test_inspect_evidence_reads_only_current_checkpointed_result(tmp_path):
+    from agentvisor.task_memory import initialize_memory, remember_iteration
+    store, engine, task = make(tmp_path)
+    task = initialize_memory(store, task)
+    store.event(task['id'], 'tool_finished', 'external_inspect', data={
+        'tool': 'external_inspect', 'status': 'completed', 'output': 'first second third'})
+    task = remember_iteration(store, task)
+    event_id = task['task_memory']['tool_results'][0]['event_id']
+    commands = CommandMCP(store, task, engine.cancel)
+    try:
+        result = commands.call('inspect_evidence', {'event_id': event_id, 'offset': 6, 'limit': 6})
+        assert result['output'] == 'second'
+        assert result['next_offset'] == 12
+        with pytest.raises(ValueError, match='not in the current task'):
+            commands.call('inspect_evidence', {'event_id': event_id + 1})
+        store.update(task['id'], goal_version=task['goal_version'] + 1)
+        with pytest.raises(ValueError, match='no matching evidence'):
+            commands.call('inspect_evidence', {'event_id': event_id})
+    finally:
+        commands.close()
+
+
 def test_failed_command_memory_survives_session_and_requires_repair(tmp_path):
     store, engine, task = make(tmp_path, timeout_seconds=60)
     command = {'command': 'echo failure-evidence; exit 7', 'yield_ms': 1000}
@@ -122,13 +144,14 @@ def test_loopback_mcp_transport_and_config(tmp_path):
             listing = client.post(gateway.mcp_url, json=dict(request, method='tools/list')).json()
             assert {tool['name'] for tool in listing['result']['tools']} == {
                 'exec', 'poll', 'stop', 'wait_any', 'get_progress', 'update_progress',
-                'apply_user_instructions', 'select_toolset'}
+                'apply_user_instructions', 'select_toolset', 'inspect_evidence'}
             unknown = dict(request, method='tools/call', params={'name': 'stop', 'arguments': {'process_id': '1234'}})
             assert client.post(gateway.mcp_url, json=unknown).json()['result']['isError']
         prompt = prepare_documents(task, {'instance': 'fake', 'context': 16384, 'command_mcp_url': gateway.mcp_url})
         config = json.loads(read_document(task, 'opencode.json'))
         assert config['permission'] == {'bash': 'deny', 'task': 'deny', 'agentvisor_process_exec': 'allow',
                                         'agentvisor_process_select_toolset': 'allow',
+                                        'agentvisor_process_inspect_evidence': 'allow',
                                         'agentvisor_process_get_progress': 'allow',
                                         'agentvisor_process_update_progress': 'allow',
                                         'agentvisor_process_apply_user_instructions': 'allow'}

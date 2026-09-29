@@ -14,11 +14,6 @@ from collections import Counter, OrderedDict, deque
 
 _READS = {'read', 'glob', 'grep', 'get_progress'}
 _WRITES = {'write', 'edit', 'apply_patch'}
-_BROWSER_OBSERVATIONS = {'browseros-neo_tabs', 'browseros-neo_navigate',
-                         'browseros-neo_snapshot', 'browseros-neo_read',
-                         'browseros-neo_grep', 'browseros-neo_evaluate',
-                         'browseros-neo_act', 'browseros-neo_download',
-                         'browseros-neo_run'}
 _NOTES = {'memory.md', 'progress.md', 'goal.md', 'run_prompt.md', 'done.md',
           'step_review.json', 'agents.md'}
 _VERIFY = re.compile(
@@ -40,10 +35,10 @@ def _name(tool):
 
 def _observation_signature(entry, output):
     if entry['tool'] != 'browseros-neo_run':
-        return _hash(['observe', entry['signature']])
+        return _hash(['observe', entry['signature'], str(output)])
     content = re.sub(r'nonce=[0-9a-f]+', 'nonce=*', str(output), flags=re.I)
     content = re.sub(r'\[ref=e\d+\]', '[ref=e*]', content)
-    return _hash(['observe', entry['signature'], content[:12000]])
+    return _hash(['observe', entry['tool'], content[:12000]])
 
 
 def _path(arguments):
@@ -90,6 +85,7 @@ class SessionProgress:
         self.window = deque(maxlen=window)
         self.pending, self.finished = OrderedDict(), OrderedDict()
         self.results = OrderedDict()
+        self.command_results = OrderedDict()
         self.timeouts = OrderedDict()
         self.epoch, self.since = 0, clock()
         self.last_result = None
@@ -165,25 +161,22 @@ class SessionProgress:
                 self._result(entry['signature'], entry['label'])
             elif entry['command'] and not inferred:
                 self.command_result(call_id, entry['command'], status=status, exit_code=exit_code)
-            elif (entry['tool'] in _BROWSER_OBSERVATIONS and not failed and
-                  not inferred and status == 'completed' and str(output).strip()):
-                # A distinct browser action is useful observed work, even before
-                # the agent has written a durable artifact. Repeating the same
-                # action with the same arguments cannot reset recovery again.
-                self._result(_observation_signature(entry, output), 'observe ' + entry['label'])
-            elif entry['epoch'] == self.epoch and entry['tool'] in _READS:
-                self.window.append(self._read_result(entry, call_id, output, error, status))
             elif entry['epoch'] == self.epoch and entry['explore'] and (
                     status == 'timed_out' or re.search(r'time[ -]?out|timed out', str(error), re.I)):
                 key = (entry['signature'], entry['label'])
                 self._remember(self.timeouts, key, self.timeouts.get(key, 0) + 1, limit=64)
+            elif entry['epoch'] == self.epoch and entry['tool'] not in _WRITES:
+                # Tool observations help diagnose a loop but are not durable
+                # progress. Their useful output is checkpointed separately.
+                self.window.append(self._read_result(entry, call_id, output, error, status))
 
     @staticmethod
     def _read_result(entry, call_id, output, error, status):
         # get_progress may contain volatile runtime timestamps. Its completion
         # is never an implementation or acceptance result.
         content = None if entry['tool'] == 'get_progress' else str(output)
-        signature = _hash([entry['signature'], content, str(error), status])
+        signature = (_observation_signature(entry, content) if entry['tool'] == 'browseros-neo_run'
+                     else _hash([entry['signature'], content, str(error), status]))
         return signature, entry['label'], call_id
 
     def command_result(self, process_id, command, *, status, exit_code=None, cwd=''):
@@ -195,8 +188,13 @@ class SessionProgress:
         with self.lock:
             if status not in {'completed', 'failed'} or type(exit_code) is not int:
                 return
+            if process_id in self.command_results:
+                return
+            self._remember(self.command_results, process_id, True)
             command = str(command).strip()
             if not is_verification_command(command):
+                signature = _hash(['command', command, cwd, status, exit_code])
+                self.window.append((signature, ('command ' + command)[:300], process_id))
                 return
             signature = _hash(['check', command, cwd, status, exit_code])
             self._result(signature, 'check ' + command)

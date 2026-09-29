@@ -39,7 +39,7 @@ def _facts(task, result):
         # Durations and volatile stdout do not turn a repeated check into progress.
         facts.add(_fingerprint(['check', entry.get('key'), entry.get('outcome'), entry.get('exit_code')]))
     for entry in (result.get('session_progress') or {}).get('result_evidence', []):
-        if entry.get('operation', '').startswith(('check ', 'observe ')):
+        if entry.get('operation', '').startswith('check '):
             facts.add(entry['fingerprint'])
     return facts
 
@@ -113,8 +113,7 @@ def continue_session(store, task, result, *, context_adjusted=False):
     elif role == 'executor' and diagnostic['diagnosed']:
         diagnostic['executor_attempts_after_diagnosis'] += 1
     missing = not diagnostic['diagnosed'] and diagnostic['diagnostic_attempts'] >= MAX_DIAGNOSTIC_ATTEMPTS
-    blocked = (result['reason'] == 'context_blocked' and not context_adjusted or
-               diagnostic['diagnosed'] and stagnant >= 5 and diagnostic['executor_attempts_after_diagnosis'] > 0)
+    blocked = result['reason'] == 'context_blocked' and not context_adjusted
     diagnose = not blocked and not missing and stagnant >= 3 and not diagnostic['diagnosed']
     state = {'scope': scope, 'without_result': stagnant,
              'diagnosis_requested': diagnose or previous.get('diagnosis_requested', False) and not advanced,
@@ -132,6 +131,12 @@ def continue_session(store, task, result, *, context_adjusted=False):
                'Continue from TASK HANDOFF MEMORY: reuse observed paths and checks, make one bounded '
                'implementation or targeted check. Do not repeat the whole-project survey. '
                'Read large files in small relevant ranges and verify the edited path before expanding scope.')
+    if stagnant >= 5 and not blocked:
+        message = ('The current step has not advanced across repeated sessions. Use the saved tool results '
+                   'and event IDs; do not repeat the same inputs or survey. Choose a different bounded '
+                   'operation that produces a durable task artifact or an acceptance check. If the latest '
+                   'tool output is incomplete, inspect only the missing part and save the finding before '
+                   'another context handoff. Record the exact obstacle and attempted alternatives.')
     task = record_recovery(store, task, result, message, repair=diagnose, layer='session')
     recovery = dict(task['recovery_context'], session_handoff=True, boundary=evidence,
                     repair=diagnose, no_result_sessions=stagnant,

@@ -29,6 +29,27 @@ def test_memory_survives_restart_and_uses_observations_not_notes(tmp_path):
     assert 'Processes from previous sessions have been stopped' in prompt
 
 
+def test_optional_tool_output_is_checkpointed_without_becoming_completion(tmp_path):
+    store, _, task = make(tmp_path)
+    task = initialize_memory(store, task)
+    store.event(task['id'], 'tool_finished', 'external_inspect', data={
+        'tool': 'external_inspect', 'status': 'completed',
+        'input': {'resource': 'module-1'}, 'output': 'Lesson A; token=private-value'})
+    store.event(task['id'], 'tool_finished', 'external_inspect', data={
+        'tool': 'external_inspect', 'status': 'completed',
+        'input': {'resource': 'module-1'}, 'output': 'Lesson A; token=another-value'})
+    task = remember_iteration(store, task)
+    task = Store(tmp_path / 'data').get(task['id'])
+    results = task['task_memory']['tool_results']
+    assert len(results) == 2
+    assert results[0]['event_id'] > 0
+    assert 'private-value' not in memory_prompt(task)
+    assert 'another-value' not in memory_prompt(task)
+    payload = prompt_payload(task)
+    assert payload['next_action']['operation'] == 'continue_from_tool_result'
+    assert payload['accepted_count'] == 0
+
+
 def test_new_goal_excludes_old_events_and_old_notes(tmp_path):
     store, _, task = make(tmp_path)
     task = initialize_memory(store, task)

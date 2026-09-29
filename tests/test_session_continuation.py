@@ -50,7 +50,7 @@ def test_controlled_handoff_preserves_accepted_and_pending_claims_and_limits(tmp
     assert task['recovery_context']['failure_layer'] == 'session'
 
 
-def test_three_empty_handoffs_get_one_diagnosis_and_executor_then_block(tmp_path):
+def test_three_empty_handoffs_get_diagnosis_then_continue_with_new_strategy(tmp_path):
     store, task = setup(tmp_path)
     task, _ = rotate(store, task)  # Establish the existing receipt baseline.
     for index in range(3):
@@ -62,8 +62,9 @@ def test_three_empty_handoffs_get_one_diagnosis_and_executor_then_block(tmp_path
     assert action == 'continue' and task['session_continuation']['diagnosed'] is True
     assert task['recovery_context']['repair'] is False
     task, action = rotate(store, task)
-    assert action == 'blocked'
+    assert action == 'continue'
     assert task['session_continuation']['without_result'] == 5
+    assert 'different bounded operation' in task['recovery_context']['error']
 
 
 def test_restart_retains_handoff_budget(tmp_path):
@@ -91,7 +92,7 @@ def test_ordinary_diagnostic_return_is_not_repeated_after_next_handoff(tmp_path)
     task, action = rotate(store, task)
     assert action == 'continue' and task['recovery_context']['repair'] is False
     task, action = rotate(store, task)
-    assert action == 'blocked'
+    assert action == 'continue'
 
 
 def test_normal_session_new_result_clears_previous_stagnation(tmp_path):
@@ -128,20 +129,20 @@ def test_new_file_content_resets_budget_but_file_timestamp_does_not(tmp_path):
     assert task['session_continuation']['without_result'] == 1
 
 
-def test_new_browser_observation_resets_handoff_stagnation_once(tmp_path):
+def test_browser_observation_does_not_disguise_handoff_stagnation(tmp_path):
     store, task = setup(tmp_path)
     task, _ = rotate(store, task)
     observation = {'session_progress': {'result_evidence': [
         {'operation': 'observe browseros-neo_navigate', 'fingerprint': 'course-page-1'}]}}
     task, action = rotate(store, task, **observation)
     assert action == 'continue'
-    assert task['session_continuation']['without_result'] == 0
-    task, _ = rotate(store, task, **observation)
     assert task['session_continuation']['without_result'] == 1
+    task, _ = rotate(store, task, **observation)
+    assert task['session_continuation']['without_result'] == 2
     observation['session_progress']['result_evidence'][0]['fingerprint'] = 'course-page-2'
     task, action = rotate(store, task, **observation)
-    assert action == 'continue'
-    assert task['session_continuation']['without_result'] == 0
+    assert action == 'diagnose'
+    assert task['session_continuation']['without_result'] == 3
 
 
 def test_same_check_output_timing_is_not_new_evidence_but_changed_result_is(tmp_path):
@@ -270,7 +271,7 @@ def test_ordinary_diagnostic_exit_without_report_counts_failed_delivery(tmp_path
     assert task['session_continuation']['diagnostic_report_missing'] is True
 
 
-def test_second_diagnostic_report_gets_executor_attempt_before_blocking(tmp_path):
+def test_second_diagnostic_report_gets_executor_attempt_without_pausing(tmp_path):
     store, task = setup(tmp_path)
     task, _ = rotate(store, task)
     for _ in range(3):
@@ -280,7 +281,7 @@ def test_second_diagnostic_report_gets_executor_attempt_before_blocking(tmp_path
     assert action == 'continue' and task['session_continuation']['diagnosed'] is True
     assert task['session_continuation']['executor_attempts_after_diagnosis'] == 0
     task, action = rotate(store, task)
-    assert action == 'blocked'
+    assert action == 'continue'
 
 
 def test_supervisor_continues_after_missing_ordinary_diagnostic_report(tmp_path, monkeypatch):

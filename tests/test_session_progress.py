@@ -60,7 +60,7 @@ def test_changed_read_results_and_short_rechecks_are_not_a_loop():
     assert guard.problem() is None
 
 
-def test_distinct_browser_observations_count_once_per_action():
+def test_browser_observations_are_not_durable_progress():
     guard, _ = detector()
     complete(guard, 'page1', tool='browseros-neo_navigate',
              arguments={'url': 'https://example.test/page-1'}, output='Page 1 loaded')
@@ -68,19 +68,39 @@ def test_distinct_browser_observations_count_once_per_action():
              arguments={'url': 'https://example.test/page-1'}, output='Changing nonce')
     complete(guard, 'failed', tool='browseros-neo_navigate',
              arguments={'url': 'https://example.test/page-2'}, output='', status='error')
-    assert guard.snapshot()['new_progress_count'] == 1
-    assert guard.snapshot()['result_evidence'][0]['operation'].startswith('observe browseros-neo_navigate')
+    assert guard.snapshot()['new_progress_count'] == 0
     complete(guard, 'page2', tool='browseros-neo_navigate',
              arguments={'url': 'https://example.test/page-2'}, output='Page 2 loaded')
-    assert guard.snapshot()['new_progress_count'] == 2
+    assert guard.snapshot()['new_progress_count'] == 0
     complete(guard, 'run1', tool='browseros-neo_run',
              arguments={'script': 'inspect current module'}, output='Lessons found nonce=aaa111 [ref=e2]')
     complete(guard, 'run-repeat', tool='browseros-neo_run',
              arguments={'script': 'inspect current module'}, output='Lessons found nonce=bbb222 [ref=e9]')
-    assert guard.snapshot()['new_progress_count'] == 3
+    assert guard.snapshot()['new_progress_count'] == 0
+    assert guard.window[-1][0] == guard.window[-2][0]
     complete(guard, 'run2', tool='browseros-neo_run',
              arguments={'script': 'inspect current module'}, output='Different lessons nonce=ccc333')
-    assert guard.snapshot()['new_progress_count'] == 4
+    assert guard.snapshot()['new_progress_count'] == 0
+    assert guard.window[-1][0] != guard.window[-2][0]
+
+
+def test_repeated_external_tool_output_is_a_detected_loop():
+    guard, clock = detector()
+    for index in range(24):
+        complete(guard, index, tool='external_inspect',
+                 arguments={'resource': 'unchanged'}, output='same response')
+    clock.now = 181
+    assert guard.problem()['reason'] == 'repeated_investigation'
+    assert guard.snapshot()['new_progress_count'] == 0
+
+
+def test_repeated_successful_nonverification_commands_are_not_progress():
+    guard, clock = detector()
+    for index in range(24):
+        guard.command_result(str(index), 'Get-ChildItem .', status='completed', exit_code=0)
+    clock.now = 181
+    assert guard.problem()['reason'] == 'repeated_investigation'
+    assert guard.snapshot()['new_progress_count'] == 0
 
 
 def test_mixed_search_and_repeated_reads_matches_observed_research_cycle():

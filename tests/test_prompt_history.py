@@ -75,4 +75,6 @@ def test_runtime_prompt_uses_single_protocol_and_readable_recovery_json(tmp_path
     # the bootstrap file should not carry another large copy.
     assert PROTOCOL not in prompt and PROTOCOL in session_contract(task)
     assert '\n  "reason": "context_handoff"' in prompt
+    assert 'Long historical error' not in prompt
+    assert '"input_limit": 48332' in prompt
     assert max(map(len, prompt.splitlines())) < 2000
