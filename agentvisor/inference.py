@@ -127,10 +127,16 @@ class InferenceGateway:
                                if item.get('step_id') == current_step and item.get('status') == 'completed'), None)
         self.tool_catalog = ToolCatalog(preferred_tool=preferred_tool)
         self.commands.select_toolset = self.tool_catalog.select
-        self.context_budget = ContextBudget(profile.get('context'), profile.get('output_limit', 4096))
         self.budget_identity = [profile.get('runtime'), profile.get('base_url'), profile.get('model'),
                                 profile.get('context')]
         calibration = task.get('context_calibration') or {}
+        measured = calibration.get('observed_prompt_tokens')
+        estimated = calibration.get('raw_estimated_tokens')
+        verified_margin = (calibration.get('identity') == self.budget_identity and
+                           type(measured) is int and measured >= 4096 and
+                           type(estimated) is int and estimated >= measured)
+        self.context_budget = ContextBudget(profile.get('context'), profile.get('output_limit', 4096),
+                                            safety_fraction=.10 if verified_margin else .20)
         if calibration.get('identity') == self.budget_identity:
             self.context_budget.restore_calibration(calibration.get('calibration'))
         self.session_stop = None

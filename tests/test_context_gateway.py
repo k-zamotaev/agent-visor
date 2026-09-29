@@ -50,6 +50,24 @@ def test_large_history_never_reaches_upstream_and_handoff_is_sticky(tmp_path, mo
     assert len([event for event in store.events(task['id']) if event['kind'] == 'session_handoff']) == 1
 
 
+def test_verified_provider_count_reduces_reserve_for_same_profile_only(tmp_path, model_server):
+    url, _ = model_server
+    store, engine, task = make(tmp_path)
+    profile = dict(task['profile'], base_url=url, context=32768)
+    identity = [profile.get(key) for key in ('runtime', 'base_url', 'model', 'context')]
+    task = store.update(task['id'], context_calibration={
+        'identity': identity, 'observed_prompt_tokens': 19286,
+        'raw_estimated_tokens': 20192, 'calibration': 1.0})
+    with InferenceGateway(store, task, profile, engine.cancel) as gateway:
+        assert gateway.context_budget.safety_fraction == .10
+        metrics = gateway.context_budget.assess(request()).metrics
+        assert metrics['safety_reserve'] == 3277
+        assert metrics['input_limit'] == 28979
+    other_profile = dict(profile, context=65536)
+    with InferenceGateway(store, task, other_profile, engine.cancel) as gateway:
+        assert gateway.context_budget.safety_fraction == .20
+
+
 def test_oversized_initial_instructions_are_nonretryable_static_failure(tmp_path, model_server):
     url, upstream = model_server
     store, engine, task = make(tmp_path)
